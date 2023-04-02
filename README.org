@@ -1,0 +1,30 @@
+Insert Js Logs.
+
+** Installation
+
+Emacs >= 30 with ~treesit~ support is required.
+
+*** Manual
+
+Download the source code and put it wherever you like, e.g. into =~/.emacs.d/js-log/=
+
+#+begin_src shell :eval no
+git clone https://github.com/KarimAziev/js-log.git ~/.emacs.d/js-log/
+#+end_src
+
+Add the downloaded directory to the load path:
+
+#+begin_src elisp :eval no
+(add-to-list 'load-path "~/.emacs.d/js-log/")
+(require 'js-log)
+#+end_src
+
+#+begin_src elisp :eval no
+(use-package js-log
+  :straight (js-log
+             :repo "KarimAziev/js-log"
+             :type git
+             :host github)
+  :bind ((:map js-log-minibuffer-map
+               ("C-j" . js-log-minibuffer-preview))))
+#+end_src

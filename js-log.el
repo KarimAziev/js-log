@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/js-log
 ;; Version: 0.1.0
 ;; Keywords: tools
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "28.2"))
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -31,64 +31,6 @@
 
 (defvar shr-color-html-colors-alist)
 (require 'treesit)
-
-(defun js-log-prettier-format (string &rest options)
-  "Apply prettier on STRING with OPTIONS.
-Return list of two elements: status (t or nil) and string with result."
-  (when-let ((prettier-cmd (let ((dir default-directory)
-                                 (node-modules)
-                                 (found))
-                             (while (setq node-modules
-                                          (unless found
-                                            (setq dir (locate-dominating-file
-                                                       dir
-                                                       "node_modules"))))
-                               (setq dir (let
-                                             ((parent
-                                               (file-name-directory
-                                                (directory-file-name
-                                                 (expand-file-name dir
-                                                                   default-directory)))))
-                                           (when (and
-                                                  (file-exists-p dir)
-                                                  (file-exists-p parent)
-                                                  (not
-                                                   (equal
-                                                    (file-truename (directory-file-name
-                                                                    (expand-file-name
-                                                                     dir)))
-                                                    (file-truename
-                                                     (directory-file-name
-                                                      (expand-file-name
-                                                       parent))))))
-                                             (if (file-name-absolute-p dir)
-                                                 (directory-file-name parent)
-                                               (file-relative-name parent)))))
-                               (let ((file (expand-file-name
-                                            "node_modules/.bin/prettier"
-                                            node-modules)))
-                                 (setq found
-                                       (when (and (file-exists-p file)
-                                                  (file-executable-p file))
-                                         file))))
-                             (or found (executable-find "prettier")))))
-    (with-temp-buffer
-      (insert string)
-      (let ((status (apply #'call-process-region
-                           (append
-                            (list (point-min)
-                                  (point-max)
-                                  prettier-cmd
-                                  t
-                                  t
-                                  nil)
-                            (or (flatten-list options)
-                                (list "--parser"
-                                      "typescript"))))))
-        (if (zerop status)
-            (buffer-string)
-          (message "%s" (buffer-string))
-          nil)))))
 
 (defun js-log-get-metadata ()
   "Return current minibuffer completion metadata."
@@ -262,38 +204,11 @@ TYPE can be a either string, or list of strings."
               type)
     (equal (treesit-node-type node) type)))
 
-(defun js-log-check-node-type-by-re (type node)
-  "Check whether NODE's type is TYPE.
-TYPE can be a either string, or list of strings."
-  (string-match-p type
-                  (treesit-node-type node)))
-
-(defun js-log-node-type-identifier-p (node)
-  "Check whether NODE's type is TYPE.
-TYPE can be a either string, or list of strings."
-  (js-log-check-node-type '("identifier" ;; "member_expression"
-                            "property_identifier")
-                          node))
-
 (defun js-log-node-cons (node)
   "Return a cons with NODE's text and NODE."
   (when node
     (cons (substring-no-properties (treesit-node-text node))
           node)))
-
-(defun js-log-ids-top-level ()
-  "Search for identifiers at top level.
-Return alist of texts and nodes."
-  (mapcar #'js-log-node-cons
-          (remove nil
-                  (mapcar
-                   (lambda (it)
-                     (treesit-search-subtree
-                      it
-                      (apply-partially
-                       #'js-log-check-node-type '("identifier"
-                                                  "property_identifier"))))
-                   (treesit-node-children (treesit-buffer-root-node))))))
 
 ;;;###autoload
 (defun js-log-node-at-point ()
@@ -337,83 +252,6 @@ Return alist of texts and nodes."
                  (propertize field 'face
                              'font-lock-builtin-face)))))
      " - ")))
-
-(defun js-log-get-node-while (fn node &rest args)
-  "Apply FN with NODE and ARGS and it's parents."
-  (when (treesit-node-p node)
-    (let ((parents)
-          (root (treesit-buffer-root-node)))
-      (while (when-let ((parent (apply fn (append (list node) args))))
-               (unless (treesit-node-eq root parent)
-                 (push parent parents)
-                 (setq node parent)
-                 parent)))
-      parents)))
-
-(defun js-log-get-node-parent-ids ()
-  "Return identifiers from all parents nodes."
-  (let ((nodes (js-log-get-node-while 'treesit-node-parent
-                                      (treesit-node-at (point)))))
-    (mapcar #'js-log-node-cons (mapcar
-                                (lambda (it)
-                                  (treesit-search-subtree
-                                   it
-                                   (lambda (it)
-                                     (equal "identifier"
-                                            (treesit-node-type it)))
-                                   nil t))
-                                nodes))))
-
-(defun js-log-node-get-siblings (step &optional named)
-  "Return siblings for node at point.
-Negative STEP means prev sibling, positive means next.
-If NAMED is non-nil, look for named
-siblings only."
-  (let ((node (treesit-node-at (point)))
-        (fn (if (> step 0)
-                'treesit-node-next-sibling
-              'treesit-node-prev-sibling))
-        (siblings))
-    (while (setq node (funcall fn node named))
-      (push node siblings))
-    (if (> step 0)
-        (nreverse siblings)
-      siblings)))
-
-(defun js-log-current-node-parents ()
-  "Return parents for current node."
-  (cl-loop for node = (treesit-node-at (point))
-           then (treesit-node-parent node)
-           while node
-           if (eq (treesit-node-start node)
-                  (point))
-           collect node))
-
-(defun js-log-get-node-siblings-all ()
-  "Return siblings for node at point.
-Negative STEP means prev sibling, positive means next.
-If NAMED is non-nil, look for named
-siblings only."
-  (let ((right-siblings (js-log-node-get-siblings 1))
-        (left-siblings (js-log-node-get-siblings -1))
-        (node (treesit-node-at (point))))
-    (cond ((and right-siblings
-                (not left-siblings))
-           (save-excursion
-             (goto-char (treesit-node-end (car (last right-siblings))))
-             (setq left-siblings (js-log-node-get-siblings -1))))
-          ((and left-siblings
-                (not right-siblings))
-           (save-excursion
-             (goto-char (treesit-node-start (car left-siblings)))
-             (setq right-siblings
-                   (js-log-node-get-siblings 1)))))
-    (seq-sort-by
-     (lambda (n)
-       (+ (treesit-node-start n)
-          (treesit-node-end n)))
-     '<
-     (append (list node) left-siblings right-siblings))))
 
 (defun js-log-node-backward-all ()
   "Return nodes before current position and in current scope."
@@ -568,14 +406,6 @@ NODE's type should be object_pattern."
                  (treesit-node-at (point))))
         (append node-list (list parent))))))
 
-(defun js-log-jump-to-node-end (node)
-  "Jump to end of NODE and highlight start and end."
-  (when-let ((start (treesit-node-start node))
-             (end (treesit-node-end node)))
-    (goto-char end)
-    (pulse-momentary-highlight-region start end)
-    node))
-
 (defun js-log-random-hex-color ()
   "Return random hexadecimal-color."
   (require 'shr-color)
@@ -646,6 +476,7 @@ NODE's type should be object_pattern."
                            (complete-with-action action strs
                                                  str pred)))))))
 
+
 ;;;###autoload
 (defun js-log ()
   "Read js items and insert them with console.log."
@@ -685,30 +516,51 @@ NODE's type should be object_pattern."
                        (point)))))))))
          (pcase name
            ("console"
-            (when (looking-back "," 0)
-              (newline-and-indent))
-            (insert
-             (concat (js-log-read-visible-ids)
-                     ","))))))
+            (let ((item (js-log-read-visible-ids))
+                  (word (thing-at-point 'symbol t)))
+              (cond ((and word (string-prefix-p word item))
+                     (insert (substring-no-properties item (length word))))
+                    ((and word)
+                     (insert ",")
+                     (newline-and-indent)
+                     (insert
+                      item))
+                    ((save-excursion
+                       (skip-chars-backward "\s\t\n")
+                       (looking-back "," 0))
+                     (indent-for-tab-command)
+                     (insert
+                      item))
+                    (t (insert ",")
+                       (newline-and-indent)
+                       (insert
+                        item))))))))
       (_ (let ((marked (list (js-log-read-visible-ids)))
+               (indent-level)
+               (indent-str)
                (result))
+           (indent-for-tab-command)
+           (setq indent-level (+ 2 (current-column)))
+           (setq indent-str (make-string indent-level ?\ ))
            (setq formatted (concat (string-join
                                     marked
                                     ",\n")
-                                   ",\n"))
-           (setq result (concat "console.log('%c" "<" meta
+                                   ""))
+           (setq result (concat "console.log(\n"
+                                indent-str "'%c" "<" meta
                                 "> "
+                                indent-str
                                 (mapconcat (lambda (it)
                                              (concat
                                               it
                                               ": %o "))
                                            marked " ")
-                                ":\\n' ," theme ", "
-                                formatted
-                                ")"))
+                                ":\\n' ," "\n" indent-str theme ", \n"
+                                indent-str formatted
+                                "\n)"))
            (insert result)
-           (when (re-search-backward "," nil t 1)
-             (forward-char 1)))))))
+           (forward-char -1)
+           (skip-chars-backward "\s\t\n"))))))
 
 (provide 'js-log)
 ;;; js-log.el ends here
