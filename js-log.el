@@ -546,17 +546,25 @@ NODE's type should be object_pattern."
                      (insert ",")
                      (newline-and-indent)
                      (insert
-                      item))
+                      item
+                      ","))
+                    ((save-excursion
+                       (looking-back "," 0))
+                     (newline-and-indent)
+                     (insert
+                      item
+                      ","))
                     ((save-excursion
                        (skip-chars-backward "\s\t\n")
                        (looking-back "," 0))
                      (indent-for-tab-command)
                      (insert
-                      item))
+                      item
+                      ","))
                     (t (insert ",")
                        (newline-and-indent)
                        (insert
-                        item))))))))
+                        item ","))))))))
       (_ (let ((marked (list (js-log-read-visible-ids)))
                (indent-level)
                (indent-str)
@@ -567,7 +575,7 @@ NODE's type should be object_pattern."
            (setq formatted (concat (string-join
                                     marked
                                     ",\n")
-                                   ""))
+                                   ","))
            (setq result (concat "console.log(\n"
                                 indent-str "'%c" "<" meta
                                 "> "
