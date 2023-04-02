@@ -42,55 +42,67 @@
    minibuffer-completion-table
    minibuffer-completion-predicate))
 
+(defun js-log-minibuffer-auto-default-candidates ()
+  "Return all current completion candidates from the minibuffer."
+  (when (minibufferp)
+    (let* ((all (completion-all-completions
+                 (minibuffer-contents)
+                 minibuffer-completion-table
+                 minibuffer-completion-predicate
+                 (max 0 (- (point)
+                           (minibuffer-prompt-end)))))
+           (last (last all)))
+      (when last (setcdr last nil))
+      (cons
+       (completion-metadata-get (js-log-get-metadata) 'category)
+       all))))
+
+(defun js-log-ivy-selected-cand ()
+  "Return the currently selected item in Ivy."
+  (when (and (memq 'ivy--queue-exhibit post-command-hook)
+             (boundp 'ivy-text)
+             (boundp 'ivy--length)
+             (boundp 'ivy-last)
+             (fboundp 'ivy--expand-file-name)
+             (fboundp 'ivy-state-current))
+    (cons
+     (completion-metadata-get (ignore-errors (js-log-get-metadata))
+                              'category)
+     (ivy--expand-file-name
+      (if (and (> ivy--length 0)
+               (stringp (ivy-state-current ivy-last)))
+          (ivy-state-current ivy-last)
+        ivy-text)))))
+
+(defun js-log-default-top-minibuffer-completion ()
+  "Target the top completion candidate in the minibuffer.
+Return the category metadatum as the type of the target."
+  (when (and (minibufferp) minibuffer-completion-table)
+    (pcase-let* ((`(,category . ,candidates)
+                  (js-log-minibuffer-auto-default-candidates))
+                 (contents (minibuffer-contents))
+                 (top (if (test-completion contents
+                                           minibuffer-completion-table
+                                           minibuffer-completion-predicate)
+                          contents
+                        (let ((completions (completion-all-sorted-completions)))
+                          (if (null completions)
+                              contents
+                            (concat
+                             (substring contents
+                                        0 (or (cdr (last completions)) 0))
+                             (car completions)))))))
+      (cons category (or (car (member top candidates)) top)))))
+
+(defvar js-log-minibuffer-candidate-finders
+  '(js-log-ivy-selected-cand
+    js-log-default-top-minibuffer-completion))
+
 (defun js-log-get-current-candidate ()
   "Return cons filename for current completion candidate."
   (let (target)
     (run-hook-wrapped
-     '((lambda ()
-         (when (and (memq 'ivy--queue-exhibit post-command-hook)
-                    (boundp 'ivy-text)
-                    (boundp 'ivy--length)
-                    (boundp 'ivy-last)
-                    (fboundp 'ivy--expand-file-name)
-                    (fboundp 'ivy-state-current))
-           (cons
-            (completion-metadata-get (ignore-errors
-                                       (js-log-get-metadata))
-                                     'category)
-            (ivy--expand-file-name
-             (if (and (> ivy--length 0)
-                      (stringp (ivy-state-current ivy-last)))
-                 (ivy-state-current ivy-last)
-               ivy-text)))))
-       (when (and (minibufferp) minibuffer-completion-table)
-         (pcase-let* ((`(,category . ,candidates)
-                       (when (minibufferp)
-                         (let* ((all (completion-all-completions
-                                      (minibuffer-contents)
-                                      minibuffer-completion-table
-                                      minibuffer-completion-predicate
-                                      (max 0 (- (point)
-                                                (minibuffer-prompt-end)))))
-                                (last (last all)))
-                           (when last (setcdr last nil))
-                           (cons
-                            (completion-metadata-get
-                             (js-log-get-metadata) 'category)
-                            all))))
-                      (contents (minibuffer-contents))
-                      (top (if (test-completion contents
-                                                minibuffer-completion-table
-                                                minibuffer-completion-predicate)
-                               contents
-                             (let ((completions
-                                    (completion-all-sorted-completions)))
-                               (if (null completions)
-                                   contents
-                                 (concat
-                                  (substring contents
-                                             0 (or (cdr (last completions)) 0))
-                                  (car completions)))))))
-           (cons category (or (car (member top candidates)) top)))))
+     'js-log-minibuffer-candidate-finders
      (lambda (fun)
        (when-let ((result (funcall fun)))
          (when (and (cdr-safe result)
@@ -426,18 +438,28 @@ NODE's type should be object_pattern."
                   "white")))))
 
 (defvar-local js-log-visible-nodes-alist nil)
+
 (defun js-log-minibuffer-preview ()
   "Jump to current minibuffer candidate."
   (interactive)
-  (with-minibuffer-selected-window
-    (let* ((node (cdr (assoc (cdr (js-log-get-current-candidate))
-                             js-log-visible-nodes-alist)))
-           (start (treesit-node-start node))
-           (end (treesit-node-end node)))
-      (save-excursion
-        (goto-char start)
-        (pulse-momentary-highlight-region
-         start end)))))
+  (let ((cand (js-log-get-current-candidate)))
+    (let ((window (minibuffer-selected-window)))
+      (when window
+        (with-selected-window window
+          (let* ((node (cdr (assoc (cdr cand)
+                                   js-log-visible-nodes-alist)))
+                 (start (treesit-node-start node))
+                 (end (treesit-node-end node)))
+            (let ((pos (point)))
+              (unwind-protect (progn
+                                (goto-char start)
+                                (pulse-momentary-highlight-region
+                                 start end)
+                                (read-key-sequence "")
+                                (setq unread-command-events
+                                      (append (this-single-command-raw-keys)
+                                              unread-command-events))))
+              (goto-char pos))))))))
 
 (defvar js-log-minibuffer-map
   (let ((map (make-sparse-keymap)))
