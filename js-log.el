@@ -268,12 +268,15 @@ TYPE can be a either string, or list of strings."
 (defun js-log-node-backward-all ()
   "Return nodes before current position and in current scope."
   (let ((nodes)
-        (node))
-    (while (setq node (when-let ((n (js-log-get-node-list-ascending)))
+        (node)
+        (prev-start))
+    (while (setq node (when-let ((n (and (not (equal (point) prev-start))
+                                         (js-log-get-node-list-ascending))))
                         (pcase (treesit-node-type (car n))
                           ("{" nil)
                           (_ (car (last
                                    n))))))
+      (setq prev-start (point))
       (goto-char (treesit-node-start node))
       (push node nodes))
     nodes))
@@ -304,8 +307,21 @@ NODE's type should be object_pattern."
                        (_ (setq acc (nconc acc (list c))))))
                    clauses
                    '())))
-    ((or "lexical_declaration"
-         "variable_declaration")
+    ("variable_declaration"
+     (seq-filter (apply-partially
+                  #'js-log-check-node-type
+                  '("identifier"))
+                 (remove nil
+                         (flatten-list (mapcar
+                                        (lambda (n)
+                                          (treesit-search-subtree
+                                           n
+                                           (apply-partially
+                                            #'js-log-check-node-type
+                                            '("identifier"))
+                                           nil t 2))
+                                        (treesit-node-children node))))))
+    ("lexical_declaration"
      (if-let ((obj (treesit-search-subtree node
                                            "object_pattern"
                                            nil
@@ -397,19 +413,30 @@ NODE's type should be object_pattern."
                 (unless (treesit-node-eq next prev-scope)
                   next)))
       (setq ids (append ids (js-log-node-ids-in-scope))))
-    ids))
+    (seq-sort-by #'treesit-node-end '< ids)))
 
 (defun js-log-get-node-list-ascending ()
   "Return ascending node list."
   (save-excursion
-    (skip-chars-backward "\n\s\t")
+    (skip-chars-backward "\s\t\n")
+    (while (and (equal "comment" (treesit-node-type (treesit-node-at (point))))
+                (not (bobp)))
+      (goto-char (treesit-node-start (treesit-node-at (point))))
+      (skip-chars-backward "\s\t\n"))
     (let* ((node-list
             (cl-loop for node = (treesit-node-at (point))
-                     then (treesit-node-parent node)
-                     while node
-                     if (eq (treesit-node-start node)
-                            (point))
-                     collect node))
+                     then
+                     (treesit-node-parent
+                      node)
+                     while
+                     node
+                     if
+                     (eq
+                      (treesit-node-start
+                       node)
+                      (point))
+                     collect
+                     node))
            (largest-node (car (last node-list)))
            (parent (treesit-node-parent largest-node)))
       (if (null largest-node)
