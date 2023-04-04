@@ -466,6 +466,7 @@ NODE's type should be object_pattern."
 
 (defvar-local js-log-visible-nodes-alist nil)
 
+
 (defun js-log-minibuffer-preview ()
   "Jump to current minibuffer candidate."
   (interactive)
@@ -477,16 +478,9 @@ NODE's type should be object_pattern."
                                    js-log-visible-nodes-alist)))
                  (start (treesit-node-start node))
                  (end (treesit-node-end node)))
-            (let ((pos (point)))
-              (unwind-protect (progn
-                                (goto-char start)
-                                (pulse-momentary-highlight-region
-                                 start end)
-                                (read-key-sequence "")
-                                (setq unread-command-events
-                                      (append (this-single-command-raw-keys)
-                                              unread-command-events))))
-              (goto-char pos))))))))
+            (goto-char start)
+            (pulse-momentary-highlight-region
+             start end)))))))
 
 (defvar js-log-minibuffer-map
   (let ((map (make-sparse-keymap)))
@@ -494,8 +488,13 @@ NODE's type should be object_pattern."
                 'js-log-minibuffer-preview)
     map))
 
-(defun js-log-read-visible-ids ()
-  "Read NODES in minibuffer."
+(defun js-log-read-visible-ids (prompt &optional predicate require-match
+                                       initial-input hist def
+                                       inherit-input-method)
+  "Read NODES in minibuffer.
+PROMPT is a string to prompt with; normally it ends in a colon and a space.
+See `completing-read' for more details on completion,
+PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
   (setq js-log-visible-nodes-alist
         (copy-tree
          (save-excursion
@@ -517,14 +516,51 @@ NODE's type should be object_pattern."
           (use-local-map
            (make-composed-keymap js-log-minibuffer-map
                                  (current-local-map))))
-      (completing-read "Symbol: "
-                       (lambda (str pred action)
-                         (if (eq action 'metadata)
-                             `(metadata
-                               (annotation-function . ,annot-fn))
-                           (complete-with-action action strs
-                                                 str pred)))))))
+      (save-excursion
+        (completing-read prompt
+                         (lambda (str pred action)
+                           (if (eq action 'metadata)
+                               `(metadata
+                                 (annotation-function . ,annot-fn))
+                             (complete-with-action action strs
+                                                   str pred)))
+                         predicate require-match
+                         initial-input hist def
+                         inherit-input-method)))))
 
+;;;###autoload
+(defun js-log-insert-complete ()
+  "Read js items and insert them with console.log."
+  (interactive)
+  (let ((word (when-let ((sym (symbol-at-point)))
+                (symbol-name
+                 sym))))
+    (when-let
+        ((item
+          (js-log-read-visible-ids "Symbol: "
+                                   (when word
+                                     (lambda (it)
+                                       (and (not (equal word it))
+                                            (string-prefix-p word it)))))))
+      (let ((parts))
+        (setq parts
+              (if-let* ((sym (symbol-at-point))
+                        (word (symbol-name
+                               sym)))
+                  (progn
+                    (if (string-prefix-p word item)
+                        (list (substring-no-properties item (length word)))
+                      (list " " item)))
+                (list item)))
+        (apply #'insert parts)))))
+
+;;;###autoload
+(defun js-log-jump-to-symbol ()
+  "Read js items and insert them with console.log."
+  (interactive)
+  (when-let* ((item (js-log-read-visible-ids "Symbol: "))
+              (node (cdr (assoc item js-log-visible-nodes-alist))))
+    (goto-char (treesit-node-start node))))
 
 ;;;###autoload
 (defun js-log ()
@@ -565,7 +601,7 @@ NODE's type should be object_pattern."
                        (point)))))))))
          (pcase name
            ("console"
-            (let ((item (js-log-read-visible-ids))
+            (let ((item (js-log-read-visible-ids "Symbol: "))
                   (word (thing-at-point 'symbol t)))
               (cond ((and word (string-prefix-p word item))
                      (insert (substring-no-properties item (length word))))
@@ -592,7 +628,7 @@ NODE's type should be object_pattern."
                        (newline-and-indent)
                        (insert
                         item ","))))))))
-      (_ (let ((marked (list (js-log-read-visible-ids)))
+      (_ (let ((marked (list (js-log-read-visible-ids "Symbol: ")))
                (indent-level)
                (indent-str)
                (result))
@@ -614,7 +650,7 @@ NODE's type should be object_pattern."
                                            marked " ")
                                 ":\\n' ," "\n" indent-str theme ", \n"
                                 indent-str formatted
-                                "\n)"))
+                                "\n" (make-string (current-column) ?\ ) ")"))
            (insert result)
            (forward-char -1)
            (skip-chars-backward "\s\t\n"))))))
