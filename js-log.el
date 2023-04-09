@@ -32,6 +32,7 @@
 (defvar shr-color-html-colors-alist)
 (require 'treesit)
 
+(defvar-local js-log-current-node nil)
 (defun js-log-get-metadata ()
   "Return current minibuffer completion metadata."
   (completion-metadata
@@ -222,6 +223,10 @@ TYPE can be a either string, or list of strings."
     (cons (substring-no-properties (treesit-node-text node))
           node)))
 
+(defun js-log-last-item (items)
+  "Return last item from list of ITEMS."
+  (car (last items)))
+
 ;;;###autoload
 (defun js-log-node-at-point ()
   "Describe NODE at point."
@@ -248,22 +253,18 @@ TYPE can be a either string, or list of strings."
                                       'font-lock-builtin-face)))
                        (list text)))
               " - "))))
+(defun js-log--pad-right (str limit)
+  "Pad STR with spaces on the right to increase the length to LIMIT."
+  (let ((width (string-width str)))
+    (if (<= width limit)
+        str
+      (truncate-string-to-width str limit nil nil t t))))
 
 (defun js-log-annotate-node (node)
   "Annotate NODE."
-  (let* ((type (treesit-node-type node))
-         (field (treesit-node-field-name node)))
-    (string-join
-     (remove nil
-             (append
-              (list
-               (when type
-                 (propertize type 'face
-                             'font-lock-keyword-face))
-               (when field
-                 (propertize field 'face
-                             'font-lock-builtin-face)))))
-     " - ")))
+  (when-let* ((parent (treesit-node-parent node))
+              (str (treesit-node-type parent)))
+    (capitalize (js-log--pad-right (replace-regexp-in-string "_" "\s" str) 50))))
 
 (defun js-log-node-backward-all ()
   "Return nodes before current position and in current scope."
@@ -274,8 +275,7 @@ TYPE can be a either string, or list of strings."
                                          (js-log-get-node-list-ascending))))
                         (pcase (treesit-node-type (car n))
                           ("{" nil)
-                          (_ (car (last
-                                   n))))))
+                          (_ (js-log-last-item n)))))
       (setq prev-start (point))
       (goto-char (treesit-node-start node))
       (push node nodes))
@@ -293,6 +293,7 @@ NODE's type should be object_pattern."
            (flatten-list (treesit-induce-sparse-tree
                           node
                           (lambda (item) item))))))
+
 
 (defun js-log-get-node-id (node)
   "Return identifier or list of identifiers from NODE on top level."
@@ -333,6 +334,39 @@ NODE's type should be object_pattern."
                                 #'js-log-check-node-type
                                 '("identifier"))
                                nil t 2)))
+    ("formal_parameters"
+     (when (ignore-errors (js-log-current-node-child-p
+                           (treesit-node-parent node)))
+       (let* ((args
+               (remove nil
+                       (flatten-list (treesit-induce-sparse-tree
+                                      node
+                                      (lambda (item) item))))))
+         (seq-filter
+          (apply-partially
+           #'js-log-check-node-type
+           '("identifier"
+             "shorthand_property_identifier_pattern"))
+          args))))
+    ((or "arrow_function"
+         "function")
+     (when (js-log-current-node-child-p node)
+       (let* ((args
+               (remove nil
+                       (flatten-list (treesit-induce-sparse-tree
+                                      (seq-find
+                                       (apply-partially
+                                        #'js-log-check-node-type
+                                        '("formal_parameters"))
+                                       (treesit-node-children
+                                        node))
+                                      (lambda (item) item))))))
+         (seq-filter
+          (apply-partially
+           #'js-log-check-node-type
+           '("identifier"
+             "shorthand_property_identifier_pattern"))
+          args))))
     ((or "function_declaration"
          "statement_block"
          "expression_statement" "if_statement"
@@ -372,48 +406,42 @@ NODE's type should be object_pattern."
         (push item res)))
     (flatten-list res)))
 
-(defun js-log-extract-args ()
-  "Extract arguments if point located before body of function or arrow function."
-  (when-let* ((prev-nodes (js-log-get-node-list-ascending))
-              (node (car (last prev-nodes))))
-    (let* ((params (pcase (treesit-node-type node)
-                     ("arrow_function"
-                      (car (treesit-node-children
-                            node)))
-                     ("formal_parameters"
-                      node)))
-           (args (remove nil
-                         (flatten-list (treesit-induce-sparse-tree
-                                        params
-                                        (lambda (item) item))))))
-      (setq args (seq-filter
-                  (apply-partially
-                   #'js-log-check-node-type
-                   '("identifier"
-                     "shorthand_property_identifier_pattern"))
-                  args)))))
+(defun js-log-current-node-child-p (node)
+  "Check whether NODE includes `js-log-current-node'.
+If `js-log-current-node' is nil, return t."
+  (or (not js-log-current-node)
+      (remove nil
+              (flatten-list
+               (treesit-induce-sparse-tree node
+                                           (lambda (it)
+                                             (treesit-node-eq
+                                              it
+                                              js-log-current-node)))))))
 
 (defun js-log-visible-ids ()
   "Return list of visible identifiers from all scopes."
-  (let ((ids (js-log-node-ids-in-scope))
+  (setq js-log-current-node (or (js-log-last-item
+                                 (js-log-get-node-list-ascending))))
+  (let ((ids (or
+              (js-log-node-ids-in-scope)))
         (prev-scope))
     (while
         (setq prev-scope
               (when-let ((next (car
                                 (js-log-get-node-list-ascending))))
                 (goto-char (treesit-node-start next))
-                (when-let* ((prev-nodes (js-log-get-node-list-ascending))
-                            (node (car (last prev-nodes))))
-                  (let ((args (pcase (treesit-node-type node)
-                                ("arrow_function"
-                                 (js-log-extract-args))
-                                ("formal_parameters"
-                                 (js-log-extract-args)))))
-                    (setq ids (append ids args))))
                 (unless (treesit-node-eq next prev-scope)
                   next)))
       (setq ids (append ids (js-log-node-ids-in-scope))))
-    (seq-sort-by #'treesit-node-end '< ids)))
+    (seq-sort-by #'treesit-node-end '< (delete-dups ids))))
+
+(defun js-log--node-list-ascending ()
+  "Return ascending node list."
+  (cl-loop for node = (treesit-node-at (point))
+           then (treesit-node-parent node) while node
+           if (eq (treesit-node-start node)
+                  (point))
+           collect node))
 
 (defun js-log-get-node-list-ascending ()
   "Return ascending node list."
@@ -424,20 +452,8 @@ NODE's type should be object_pattern."
       (goto-char (treesit-node-start (treesit-node-at (point))))
       (skip-chars-backward "\s\t\n"))
     (let* ((node-list
-            (cl-loop for node = (treesit-node-at (point))
-                     then
-                     (treesit-node-parent
-                      node)
-                     while
-                     node
-                     if
-                     (eq
-                      (treesit-node-start
-                       node)
-                      (point))
-                     collect
-                     node))
-           (largest-node (car (last node-list)))
+            (js-log--node-list-ascending))
+           (largest-node (js-log-last-item node-list))
            (parent (treesit-node-parent largest-node)))
       (if (null largest-node)
           (list (treesit-node-at (point))
@@ -464,9 +480,7 @@ NODE's type should be object_pattern."
                     "black"
                   "white")))))
 
-(defvar-local js-log-visible-nodes-alist nil)
-
-
+(defvar js-log-nodes-alist nil)
 (defun js-log-minibuffer-preview ()
   "Jump to current minibuffer candidate."
   (interactive)
@@ -475,7 +489,7 @@ NODE's type should be object_pattern."
       (when window
         (with-selected-window window
           (let* ((node (cdr (assoc (cdr cand)
-                                   js-log-visible-nodes-alist)))
+                                   js-log-nodes-alist)))
                  (start (treesit-node-start node))
                  (end (treesit-node-end node)))
             (goto-char start)
@@ -495,22 +509,20 @@ NODE's type should be object_pattern."
 PROMPT is a string to prompt with; normally it ends in a colon and a space.
 See `completing-read' for more details on completion,
 PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
-  (setq js-log-visible-nodes-alist
-        (copy-tree
-         (save-excursion
-           (mapcar #'js-log-node-cons
-                   (js-log-visible-ids)))))
+  (setq js-log-nodes-alist
+        (save-excursion
+          (mapcar #'js-log-node-cons
+                  (js-log-visible-ids))))
   (let* ((annot-fn (lambda (it)
                      (concat " "
-                             (if-let
-                                 ((node
-                                   (cdr (assoc (substring-no-properties
-                                                it)
-                                               js-log-visible-nodes-alist))))
+                             (if-let ((node
+                                       (cdr (assoc (substring-no-properties
+                                                    it)
+                                                   js-log-nodes-alist))))
                                  (js-log-annotate-node node)
                                " "))))
          (strs (mapcar #'car
-                       js-log-visible-nodes-alist)))
+                       js-log-nodes-alist)))
     (minibuffer-with-setup-hook
         (lambda ()
           (use-local-map
@@ -559,7 +571,7 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
   "Read js items and insert them with console.log."
   (interactive)
   (when-let* ((item (js-log-read-visible-ids "Symbol: "))
-              (node (cdr (assoc item js-log-visible-nodes-alist))))
+              (node (cdr (assoc item js-log-nodes-alist))))
     (goto-char (treesit-node-start node))))
 
 ;;;###autoload
@@ -574,27 +586,23 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                           (list buff (line-number-at-pos (point)))
                           " "))
     (pcase (treesit-node-type
-            (car (last (js-log-get-node-list-ascending))))
+            (js-log-last-item (js-log-get-node-list-ascending)))
       ("arguments"
        (let ((name
               (ignore-errors
                 (save-excursion
                   (goto-char
                    (treesit-node-start
-                    (car
-                     (last
-                      (js-log-get-node-list-ascending)))))
+                    (js-log-last-item (js-log-get-node-list-ascending))))
                   (when (equal
                          (treesit-node-type
-                          (car
-                           (last
-                            (js-log-get-node-list-ascending))))
+                          (js-log-last-item
+                           (js-log-get-node-list-ascending)))
                          "call_expression")
                     (goto-char
                      (treesit-node-start
-                      (car
-                       (last
-                        (js-log-get-node-list-ascending)))))
+                      (js-log-last-item
+                       (js-log-get-node-list-ascending))))
                     (substring-no-properties
                      (treesit-node-text
                       (treesit-node-at
