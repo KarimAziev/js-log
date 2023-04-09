@@ -260,11 +260,11 @@ TYPE can be a either string, or list of strings."
         str
       (truncate-string-to-width str limit nil nil t t))))
 
-(defun js-log-annotate-node (node)
+(defun js-log-annotate-parent-node (node)
   "Annotate NODE."
   (when-let* ((parent (treesit-node-parent node))
               (str (treesit-node-type parent)))
-    (capitalize (js-log--pad-right (replace-regexp-in-string "_" "\s" str) 50))))
+    (capitalize (replace-regexp-in-string "_" "\s" str))))
 
 (defun js-log-node-backward-all ()
   "Return nodes before current position and in current scope."
@@ -519,7 +519,7 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                                        (cdr (assoc (substring-no-properties
                                                     it)
                                                    js-log-nodes-alist))))
-                                 (js-log-annotate-node node)
+                                 (js-log-annotate-parent-node node)
                                " "))))
          (strs (mapcar #'car
                        js-log-nodes-alist)))
