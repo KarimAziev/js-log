@@ -266,20 +266,6 @@ TYPE can be a either string, or list of strings."
               (str (treesit-node-type parent)))
     (capitalize (replace-regexp-in-string "_" "\s" str))))
 
-(defun js-log-node-backward-all ()
-  "Return nodes before current position and in current scope."
-  (let ((nodes)
-        (node)
-        (prev-start))
-    (while (setq node (when-let ((n (and (not (equal (point) prev-start))
-                                         (js-log-get-node-list-ascending))))
-                        (pcase (treesit-node-type (car n))
-                          ("{" nil)
-                          (_ (js-log-last-item n)))))
-      (setq prev-start (point))
-      (goto-char (treesit-node-start node))
-      (push node nodes))
-    nodes))
 
 (defun js-log-get-object-pattern-ids (node)
   "Return identifiers from NODE.
@@ -294,6 +280,17 @@ NODE's type should be object_pattern."
                           node
                           (lambda (item) item))))))
 
+(defun js-log-current-node-child-p (node)
+  "Check whether NODE includes `js-log-current-node'.
+If `js-log-current-node' is nil, return t."
+  (or (not js-log-current-node)
+      (remove nil
+              (flatten-list
+               (treesit-induce-sparse-tree node
+                                           (lambda (it)
+                                             (treesit-node-eq
+                                              it
+                                              js-log-current-node)))))))
 
 (defun js-log-get-node-id (node)
   "Return identifier or list of identifiers from NODE on top level."
@@ -403,45 +400,6 @@ NODE's type should be object_pattern."
                          "("))
          found)))))
 
-(defun js-log-node-ids-in-scope ()
-  "Return list of visible in scope identifiers."
-  (let ((nodes (reverse (js-log-node-backward-all)))
-        (node)
-        (res))
-    (while (setq node (pop nodes))
-      (when-let ((item (js-log-get-node-id node)))
-        (push item res)))
-    (flatten-list res)))
-
-(defun js-log-current-node-child-p (node)
-  "Check whether NODE includes `js-log-current-node'.
-If `js-log-current-node' is nil, return t."
-  (or (not js-log-current-node)
-      (remove nil
-              (flatten-list
-               (treesit-induce-sparse-tree node
-                                           (lambda (it)
-                                             (treesit-node-eq
-                                              it
-                                              js-log-current-node)))))))
-
-(defun js-log-visible-ids ()
-  "Return list of visible identifiers from all scopes."
-  (setq js-log-current-node (or (js-log-last-item
-                                 (js-log-get-node-list-ascending))))
-  (let ((ids (or
-              (js-log-node-ids-in-scope)))
-        (prev-scope))
-    (while
-        (setq prev-scope
-              (when-let ((next (car
-                                (js-log-get-node-list-ascending))))
-                (goto-char (treesit-node-start next))
-                (unless (treesit-node-eq next prev-scope)
-                  next)))
-      (setq ids (append ids (js-log-node-ids-in-scope))))
-    (seq-sort-by #'treesit-node-end '< (delete-dups ids))))
-
 (defun js-log--node-list-ascending ()
   "Return ascending node list."
   (cl-loop for node = (treesit-node-at (point))
@@ -467,6 +425,50 @@ If `js-log-current-node' is nil, return t."
                 (treesit-node-parent
                  (treesit-node-at (point))))
         (append node-list (list parent))))))
+
+(defun js-log-node-backward-all ()
+  "Return nodes before current position and in current scope."
+  (let ((nodes)
+        (node)
+        (prev-start))
+    (while (setq node (when-let ((n (and (not (equal (point) prev-start))
+                                         (js-log-get-node-list-ascending))))
+                        (pcase (treesit-node-type (car n))
+                          ("{" nil)
+                          (_ (js-log-last-item n)))))
+      (setq prev-start (point))
+      (goto-char (treesit-node-start node))
+      (push node nodes))
+    nodes))
+
+(defun js-log-node-ids-in-scope ()
+  "Return list of visible in scope identifiers."
+  (let ((nodes (reverse (js-log-node-backward-all)))
+        (node)
+        (res))
+    (while (setq node (pop nodes))
+      (when-let ((item (js-log-get-node-id node)))
+        (push item res)))
+    (flatten-list res)))
+
+
+(defun js-log-visible-ids ()
+  "Return list of visible identifiers from all scopes."
+  (setq js-log-current-node (or (js-log-last-item
+                                 (js-log-get-node-list-ascending))))
+  (let ((ids (or
+              (js-log-node-ids-in-scope)))
+        (prev-scope))
+    (while
+        (setq prev-scope
+              (when-let ((next (car
+                                (js-log-get-node-list-ascending))))
+                (goto-char (treesit-node-start next))
+                (unless (treesit-node-eq next prev-scope)
+                  next)))
+      (setq ids (append ids (js-log-node-ids-in-scope))))
+    (seq-sort-by #'treesit-node-end '< (delete-dups ids))))
+
 
 (defun js-log-random-hex-color ()
   "Return random hexadecimal-color."
