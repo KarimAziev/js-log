@@ -334,6 +334,13 @@ NODE's type should be object_pattern."
                                 #'js-log-check-node-type
                                 '("identifier"))
                                nil t 2)))
+    ("catch_clause"
+     (treesit-search-subtree
+      node
+      (apply-partially
+       #'js-log-check-node-type
+       '("identifier"))
+      nil t 2))
     ("formal_parameters"
      (when (ignore-errors (js-log-current-node-child-p
                            (treesit-node-parent node)))
