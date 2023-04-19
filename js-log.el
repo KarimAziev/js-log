@@ -521,13 +521,18 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
           (mapcar #'js-log-node-cons
                   (js-log-visible-ids))))
   (let* ((annot-fn (lambda (it)
-                     (concat " "
-                             (if-let ((node
-                                       (cdr (assoc (substring-no-properties
-                                                    it)
-                                                   js-log-nodes-alist))))
-                                 (js-log-annotate-parent-node node)
-                               " "))))
+                     (format
+                      (propertize
+                       (concat (propertize " " 'display '(space :align-to
+                                                                40))
+                               " %s")
+                       'face 'completions-annotations)
+                      (if-let ((node
+                                (cdr (assoc (substring-no-properties
+                                             it)
+                                            js-log-nodes-alist))))
+                          (js-log-annotate-parent-node node)
+                        ""))))
          (strs (mapcar #'car
                        js-log-nodes-alist)))
     (minibuffer-with-setup-hook
