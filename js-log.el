@@ -227,11 +227,16 @@ TYPE can be a either string, or list of strings."
   "Return last item from list of ITEMS."
   (car (last items)))
 
+(defun js-log--node-at-point ()
+	"Describe NODE at point."
+	(js-log-last-item (js-log-get-node-list-ascending)))
+
+
 ;;;###autoload
 (defun js-log-node-at-point ()
-  "Describe NODE at point."
-  (interactive)
-  (let* ((node (treesit-node-at (point)))
+	"Describe NODE at point."
+	(interactive)
+  (let* ((node (js-log-last-item (js-log-get-node-list-ascending)))
          (type (treesit-node-type node))
          (field (treesit-node-field-name node))
          (txt (substring-no-properties (treesit-node-text node)))
@@ -280,21 +285,24 @@ NODE's type should be object_pattern."
                           node
                           (lambda (item) item))))))
 
+(defun js-log-current--node-child-p (node parent)
+	"Check whether PARENT includes NODE."
+	(remove nil
+          (flatten-list
+           (treesit-induce-sparse-tree parent
+                                       (lambda (it)
+                                         (treesit-node-eq
+                                          it
+                                          node))))))
 (defun js-log-current-node-child-p (node)
-  "Check whether NODE includes `js-log-current-node'.
+	"Check whether NODE includes `js-log-current-node'.
 If `js-log-current-node' is nil, return t."
-  (or (not js-log-current-node)
-      (remove nil
-              (flatten-list
-               (treesit-induce-sparse-tree node
-                                           (lambda (it)
-                                             (treesit-node-eq
-                                              it
-                                              js-log-current-node)))))))
+	(or (not js-log-current-node)
+			(js-log-current--node-child-p node js-log-current-node)))
 
 (defun js-log-get-node-id (node)
-  "Return identifier or list of identifiers from NODE on top level."
-  (pcase (treesit-node-type node)
+	"Return identifier or list of identifiers from NODE on top level."
+	(pcase (treesit-node-type node)
     ("import_statement"
      (let ((clauses (flatten-list (cdr (treesit-induce-sparse-tree
                                         node
@@ -331,6 +339,18 @@ If `js-log-current-node' is nil, return t."
                                 #'js-log-check-node-type
                                 '("identifier"))
                                nil t 2)))
+		("object"
+     (if-let ((obj (treesit-search-subtree node
+                                           "object_pattern"
+                                           nil
+                                           nil
+                                           2)))
+         (js-log-get-object-pattern-ids obj)
+       (treesit-search-subtree node
+                               (apply-partially
+                                #'js-log-check-node-type
+                                '("identifier"))
+                               nil t 2)))
     ("catch_clause"
      (treesit-search-subtree
       node
@@ -355,22 +375,31 @@ If `js-log-current-node' is nil, return t."
     ((or "arrow_function"
          "function")
      (when (js-log-current-node-child-p node)
-       (let* ((args
-               (remove nil
-                       (flatten-list (treesit-induce-sparse-tree
-                                      (seq-find
-                                       (apply-partially
-                                        #'js-log-check-node-type
-                                        '("formal_parameters"))
-                                       (treesit-node-children
-                                        node))
-                                      (lambda (item) item))))))
-         (seq-filter
-          (apply-partially
-           #'js-log-check-node-type
-           '("identifier"
-             "shorthand_property_identifier_pattern"))
-          args))))
+			 (when-let ((children (treesit-node-children
+                             node)))
+				 (cond ((js-log-check-node-type
+								 '("identifier"
+									 "shorthand_property_identifier_pattern")
+								 (car children))
+								(list (car children)))
+							 ((js-log-check-node-type '("formal_parameters")
+																				(car children))
+								(let* ((args
+												(remove nil
+																(flatten-list (treesit-induce-sparse-tree
+																							 (seq-find
+																								(apply-partially
+																								 #'js-log-check-node-type
+																								 '("formal_parameters"))
+																								children)
+																							 (lambda (item) item)))))
+											 (result (seq-filter
+																(apply-partially
+																 #'js-log-check-node-type
+																 '("identifier"
+																	 "shorthand_property_identifier_pattern"))
+																args)))
+									result))))))
     ((or "function_declaration"
          "statement_block"
          "expression_statement" "if_statement"
@@ -411,11 +440,11 @@ If `js-log-current-node' is nil, return t."
 (defun js-log-get-node-list-ascending ()
   "Return ascending node list."
   (save-excursion
-    (skip-chars-backward "\s\t\n")
+    (skip-chars-backward "\s\t\n\r\f")
     (while (and (equal "comment" (treesit-node-type (treesit-node-at (point))))
                 (not (bobp)))
       (goto-char (treesit-node-start (treesit-node-at (point))))
-      (skip-chars-backward "\s\t\n"))
+      (skip-chars-backward "\s\t\n\r\f"))
     (let* ((node-list
             (js-log--node-list-ascending))
            (largest-node (js-log-last-item node-list))
@@ -425,6 +454,101 @@ If `js-log-current-node' is nil, return t."
                 (treesit-node-parent
                  (treesit-node-at (point))))
         (append node-list (list parent))))))
+
+(defun js-log-node-up ()
+	"Return nodes before current position and in current scope."
+	(when-let ((node (js-log-last-item
+										(js-log-get-node-list-ascending))))
+		(goto-char (treesit-node-start node))
+		node))
+
+(defun js-log-annotate-path (&rest _)
+	"Return nodes before current position and in current scope."
+	(when-let ((path (js-log-get-obj-path)))
+		(string-join (mapcar 'treesit-node-text path) ".")))
+
+(defun js-log-get-up ()
+	"Return nodes before current position and in current scope."
+	(let ((initial-node (treesit-node-at (point)))
+				(node))
+		(save-excursion
+			(while
+					(setq node
+								(when-let ((n (js-log-last-item
+															 (js-log-get-node-list-ascending))))
+									(if (not initial-node)
+											(setq initial-node (js-log-last-item
+																					n))
+										(and (js-log-current--node-child-p
+													initial-node (js-log-last-item
+																				n))
+												 (js-log-last-item
+													n))))))
+			(goto-char (treesit-node-start node)))))
+
+(defun js-log-get-obj-path ()
+	"Return nodes before current position and in current scope."
+	(save-excursion
+		(let ((nodes)
+					(node)
+					(prev-start)
+					(initial-node (treesit-node-at (point))))
+			(pcase (treesit-node-type initial-node)
+				(":"
+				 (goto-char
+					(treesit-node-start
+					 (treesit-node-prev-sibling
+						initial-node)))
+				 (setq initial-node (treesit-node-at (point)))))
+			(while (setq node
+									 (when-let ((n (and (not (equal (point) prev-start))
+																			(js-log-get-node-list-ascending))))
+										 (pcase (treesit-node-type (car n))
+											 (_
+												(if (not initial-node)
+														(setq n(js-log-last-item n))
+													(and (js-log-current--node-child-p
+																initial-node (js-log-last-item
+																							n))
+															 (js-log-last-item
+																n)))))))
+				(setq prev-start (point))
+				(goto-char (treesit-node-start node))
+				(push node nodes))
+			(remove nil
+							(mapcar
+							 (lambda (node)
+								 (pcase (treesit-node-type node)
+									 ("pair"
+										(treesit-search-subtree
+										 (treesit-node-child
+											node
+											0)
+										 (apply-partially
+											#'js-log-check-node-type
+											'("property_identifier"
+												"computed_property_name"))))
+									 ("lexical_declaration"
+										(if-let ((obj
+															(treesit-search-subtree
+															 node
+															 "object_pattern"
+															 nil
+															 nil
+															 2)))
+												(js-log-get-object-pattern-ids
+												 obj)
+											(treesit-search-subtree
+											 node
+											 (apply-partially
+												#'js-log-check-node-type
+												'("identifier"))
+											 nil
+											 t
+											 2)))))
+							 (delq nil
+										 (append nodes (list initial-node))))))))
+
 
 (defun js-log-node-backward-all ()
   "Return nodes before current position and in current scope."
@@ -640,7 +764,7 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                       item
                       ","))
                     ((save-excursion
-                       (skip-chars-backward "\s\t\n")
+                       (skip-chars-backward "\s\t\n\r\f")
                        (looking-back "," 0))
                      (indent-for-tab-command)
                      (insert
@@ -650,32 +774,33 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                        (newline-and-indent)
                        (insert
                         item ","))))))))
-      (_ (let ((marked (list (js-log-read-visible-ids "Symbol: ")))
-               (indent-level)
-               (indent-str)
-               (result))
-           (indent-for-tab-command)
-           (setq indent-level (+ 2 (current-column)))
-           (setq indent-str (make-string indent-level ?\ ))
-           (setq formatted (concat (string-join
-                                    marked
-                                    ",\n")
-                                   ","))
-           (setq result (concat "console.log(\n"
-                                indent-str "'%c" "<" meta
-                                "> "
-                                indent-str
-                                (mapconcat (lambda (it)
-                                             (concat
-                                              it
-                                              ": %o "))
-                                           marked " ")
-                                ":\\n' ," "\n" indent-str theme ", \n"
-                                indent-str formatted
-                                "\n" (make-string (current-column) ?\ ) ")"))
-           (insert result)
-           (forward-char -1)
-           (skip-chars-backward "\s\t\n"))))))
+      (_
+       (let ((marked (list (js-log-read-visible-ids "Symbol: ")))
+             (indent-level)
+             (indent-str)
+             (result))
+         (indent-for-tab-command)
+         (setq indent-level (+ 2 (current-column)))
+         (setq indent-str (make-string indent-level ?\ ))
+         (setq formatted (concat (string-join
+                                  marked
+                                  ",\n")
+                                 ","))
+         (setq result (concat "console.log(\n"
+                              indent-str "'%c" "<" meta
+                              "> "
+                              indent-str
+                              (mapconcat (lambda (it)
+                                           (concat
+                                            it
+                                            ": %o "))
+                                         marked " ")
+                              ":\\n' ," "\n" indent-str theme ", \n"
+                              indent-str formatted
+                              "\n" (make-string (current-column) ?\ ) ")"))
+         (insert result)
+         (forward-char -1)
+         (skip-chars-backward "\s\t\n\r\f"))))))
 
 (provide 'js-log)
 ;;; js-log.el ends here
