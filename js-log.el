@@ -767,7 +767,7 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                     ((save-excursion
                        (skip-chars-backward "\s\t\n\r\f")
                        (looking-back "," 0))
-                     (indent-for-tab-command)
+                     (indent-according-to-mode)
                      (insert
                       item
                       ","))
