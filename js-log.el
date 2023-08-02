@@ -726,61 +726,59 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
                           " "))
     (pcase (treesit-node-type
             (js-log-last-item (js-log-get-node-list-ascending)))
-      ("arguments"
-       (let ((name
-              (ignore-errors
-                (save-excursion
-                  (goto-char
-                   (treesit-node-start
-                    (js-log-last-item (js-log-get-node-list-ascending))))
-                  (when (equal
-                         (treesit-node-type
-                          (js-log-last-item
-                           (js-log-get-node-list-ascending)))
-                         "call_expression")
-                    (goto-char
-                     (treesit-node-start
-                      (js-log-last-item
-                       (js-log-get-node-list-ascending))))
-                    (substring-no-properties
-                     (treesit-node-text
-                      (treesit-node-at
-                       (point)))))))))
-         (pcase name
-           ("console"
-            (let ((item (js-log-read-visible-ids "Symbol: "))
-                  (word (thing-at-point 'symbol t)))
-              (cond ((and word (string-prefix-p word item))
-                     (insert (substring-no-properties item (length word))))
-                    ((and word)
-                     (insert ",")
-                     (newline-and-indent)
-                     (insert
-                      item
-                      ","))
-                    ((save-excursion
-                       (looking-back "," 0))
-                     (newline-and-indent)
-                     (insert
-                      item
-                      ","))
-                    ((save-excursion
-                       (skip-chars-backward "\s\t\n\r\f")
-                       (looking-back "," 0))
-                     (indent-according-to-mode)
-                     (insert
-                      item
-                      ","))
-                    (t (insert ",")
-                       (newline-and-indent)
-                       (insert
-                        item ","))))))))
+      ((and (pred (string= "arguments"))
+            (guard (ignore-errors
+                     (string= "console" (save-excursion
+                                          (goto-char
+                                           (treesit-node-start
+                                            (js-log-last-item
+                                             (js-log-get-node-list-ascending))))
+                                          (when (equal
+                                                 (treesit-node-type
+                                                  (js-log-last-item
+                                                   (js-log-get-node-list-ascending)))
+                                                 "call_expression")
+                                            (goto-char
+                                             (treesit-node-start
+                                              (js-log-last-item
+                                               (js-log-get-node-list-ascending))))
+                                            (substring-no-properties
+                                             (treesit-node-text
+                                              (treesit-node-at
+                                               (point))))))))))
+       (let ((item (js-log-read-visible-ids "Symbol: "))
+             (word (thing-at-point 'symbol t)))
+         (cond ((and word (string-prefix-p word item))
+                (insert (substring-no-properties item (length word))))
+               ((and word)
+                (insert ",")
+                (newline-and-indent)
+                (insert
+                 item
+                 ","))
+               ((save-excursion
+                  (looking-back "," 0))
+                (newline-and-indent)
+                (insert
+                 item
+                 ","))
+               ((save-excursion
+                  (skip-chars-backward "\s\t\n\r\f")
+                  (looking-back "," 0))
+                (indent-according-to-mode)
+                (insert
+                 item
+                 ","))
+               (t (insert ",")
+                  (newline-and-indent)
+                  (insert
+                   item ",")))))
       (_
        (let ((marked (list (js-log-read-visible-ids "Symbol: ")))
              (indent-level)
              (indent-str)
              (result))
-         (indent-for-tab-command)
+         (indent-according-to-mode)
          (setq indent-level (+ 2 (current-column)))
          (setq indent-str (make-string indent-level ?\ ))
          (setq formatted (concat (string-join
