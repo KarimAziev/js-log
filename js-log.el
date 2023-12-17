@@ -31,88 +31,9 @@
 ;;; Code:
 
 (defvar shr-color-html-colors-alist)
+
+
 (require 'treesit)
-
-(defvar-local js-log-current-node nil)
-(defun js-log-get-metadata ()
-  "Return current minibuffer completion metadata."
-  (completion-metadata
-   (buffer-substring-no-properties
-    (minibuffer-prompt-end)
-    (max (minibuffer-prompt-end)
-         (point)))
-   minibuffer-completion-table
-   minibuffer-completion-predicate))
-
-(defun js-log-minibuffer-auto-default-candidates ()
-  "Return all current completion candidates from the minibuffer."
-  (when (minibufferp)
-    (let* ((all (completion-all-completions
-                 (minibuffer-contents)
-                 minibuffer-completion-table
-                 minibuffer-completion-predicate
-                 (max 0 (- (point)
-                           (minibuffer-prompt-end)))))
-           (last (last all)))
-      (when last (setcdr last nil))
-      (cons
-       (completion-metadata-get (js-log-get-metadata) 'category)
-       all))))
-
-(defun js-log-ivy-selected-cand ()
-  "Return the currently selected item in Ivy."
-  (when (and (memq 'ivy--queue-exhibit post-command-hook)
-             (boundp 'ivy-text)
-             (boundp 'ivy--length)
-             (boundp 'ivy-last)
-             (fboundp 'ivy--expand-file-name)
-             (fboundp 'ivy-state-current))
-    (cons
-     (completion-metadata-get (ignore-errors (js-log-get-metadata))
-                              'category)
-     (ivy--expand-file-name
-      (if (and (> ivy--length 0)
-               (stringp (ivy-state-current ivy-last)))
-          (ivy-state-current ivy-last)
-        ivy-text)))))
-
-(defun js-log-default-top-minibuffer-completion ()
-  "Target the top completion candidate in the minibuffer.
-Return the category metadatum as the type of the target."
-  (when (and (minibufferp) minibuffer-completion-table)
-    (pcase-let* ((`(,category . ,candidates)
-                  (js-log-minibuffer-auto-default-candidates))
-                 (contents (minibuffer-contents))
-                 (top (if (test-completion contents
-                                           minibuffer-completion-table
-                                           minibuffer-completion-predicate)
-                          contents
-                        (let ((completions (completion-all-sorted-completions)))
-                          (if (null completions)
-                              contents
-                            (concat
-                             (substring contents
-                                        0 (or (cdr (last completions)) 0))
-                             (car completions)))))))
-      (cons category (or (car (member top candidates)) top)))))
-
-(defvar js-log-minibuffer-candidate-finders
-  '(js-log-ivy-selected-cand
-    js-log-default-top-minibuffer-completion))
-
-(defun js-log-get-current-candidate ()
-  "Return cons filename for current completion candidate."
-  (let (target)
-    (run-hook-wrapped
-     'js-log-minibuffer-candidate-finders
-     (lambda (fun)
-       (when-let ((result (funcall fun)))
-         (when (and (cdr-safe result)
-                    (stringp (cdr-safe result))
-                    (not (string-empty-p (cdr-safe result))))
-           (setq target result)))
-       (and target (minibufferp))))
-    target))
 
 (defvar js-log-node-types '(">>" "<<" "~" "&=" "|=" ">>>=" "do"
                             "do_statement" "-=" "continue"
@@ -208,34 +129,124 @@ Return the category metadatum as the type of the target."
                             "formal_parameters" "arrow_function" "("
                             "parenthesized_expression"
                             "call_expression" "expression_statement"
-                            "program"))
+                            "program")
+  "List of JavaScript syntax node types for logging within a tree-sitter parser.")
 
 (defun js-log-check-node-type (type node)
-  "Check whether NODE's type is TYPE.
-TYPE can be a either string, or list of strings."
+  "Check if NODE's TYPE matches type or list TYPE.
+
+Argument TYPE is either a string specifying a single node type or a list of
+strings specifying multiple NODE types.
+
+Argument NODE is the Treesit node whose TYPE is being checked."
   (if (listp type)
       (member (treesit-node-type node)
               type)
     (equal (treesit-node-type node) type)))
 
+(defvar-local js-log-current-node nil)
+
+(defvar js-log-nodes-alist nil
+  "Alist mapping JavaScript AST node types to logging functions.")
+
+(defun js-log-get-metadata ()
+  "Return completion metadata for the current minibuffer contents."
+  (completion-metadata
+   (buffer-substring-no-properties
+    (minibuffer-prompt-end)
+    (max (minibuffer-prompt-end)
+         (point)))
+   minibuffer-completion-table
+   minibuffer-completion-predicate))
+
+(defun js-log-minibuffer-auto-default-candidates ()
+  "Display completion candidates for minibuffer input."
+  (when (minibufferp)
+    (let* ((all (completion-all-completions
+                 (minibuffer-contents)
+                 minibuffer-completion-table
+                 minibuffer-completion-predicate
+                 (max 0 (- (point)
+                           (minibuffer-prompt-end)))))
+           (last (last all)))
+      (when last (setcdr last nil))
+      (cons
+       (completion-metadata-get (js-log-get-metadata) 'category)
+       all))))
+
+(defun js-log-ivy-selected-cand ()
+  "Log selected candidate's metadata and path."
+  (when (and (memq 'ivy--queue-exhibit post-command-hook)
+             (boundp 'ivy-text)
+             (boundp 'ivy--length)
+             (boundp 'ivy-last)
+             (fboundp 'ivy--expand-file-name)
+             (fboundp 'ivy-state-current))
+    (cons
+     (completion-metadata-get (ignore-errors (js-log-get-metadata))
+                              'category)
+     (ivy--expand-file-name
+      (if (and (> ivy--length 0)
+               (stringp (ivy-state-current ivy-last)))
+          (ivy-state-current ivy-last)
+        ivy-text)))))
+
+(defun js-log-default-top-minibuffer-completion ()
+  "Display top completion or current content in minibuffer."
+  (when (and (minibufferp) minibuffer-completion-table)
+    (pcase-let* ((`(,category . ,candidates)
+                  (js-log-minibuffer-auto-default-candidates))
+                 (contents (minibuffer-contents))
+                 (top (if (test-completion contents
+                                           minibuffer-completion-table
+                                           minibuffer-completion-predicate)
+                          contents
+                        (let ((completions (completion-all-sorted-completions)))
+                          (if (null completions)
+                              contents
+                            (concat
+                             (substring contents
+                                        0 (or (cdr (last completions)) 0))
+                             (car completions)))))))
+      (cons category (or (car (member top candidates)) top)))))
+
+(defvar js-log-minibuffer-candidate-finders
+  '(js-log-ivy-selected-cand
+    js-log-default-top-minibuffer-completion)
+  "List of functions to find current minibuffer completion candidates.")
+
+(defun js-log-get-current-candidate ()
+  "Return selected candidate information as a cons cell."
+  (let (target)
+    (run-hook-wrapped
+     'js-log-minibuffer-candidate-finders
+     (lambda (fun)
+       (when-let ((result (funcall fun)))
+         (when (and (cdr-safe result)
+                    (stringp (cdr-safe result))
+                    (not (string-empty-p (cdr-safe result))))
+           (setq target result)))
+       (and target (minibufferp))))
+    target))
+
 (defun js-log-node-cons (node)
-  "Return a cons with NODE's text and NODE."
+  "Return cons of NODE text without properties and node.
+
+Argument NODE is the tree-sitter node to extract text from and create a cons
+cell."
   (when node
     (cons (substring-no-properties (treesit-node-text node))
           node)))
 
 (defun js-log-last-item (items)
-  "Return last item from list of ITEMS."
+  "Return the last element of the list ITEMS.
+
+Argument ITEMS is a list from which the last item will be retrieved."
   (car (last items)))
-
-(defun js-log--node-at-point ()
-  "Describe NODE at point."
-  (js-log-last-item (js-log-get-node-list-ascending)))
-
 
 ;;;###autoload
 (defun js-log-node-at-point ()
-  "Describe NODE at point."
+  "Log node details at cursor position."
   (interactive)
   (let* ((node (js-log-last-item (js-log-get-node-list-ascending)))
          (type (treesit-node-type node))
@@ -259,23 +270,20 @@ TYPE can be a either string, or list of strings."
                                       'font-lock-builtin-face)))
                        (list text)))
               " - "))))
-(defun js-log--pad-right (str limit)
-  "Pad STR with spaces on the right to increase the length to LIMIT."
-  (let ((width (string-width str)))
-    (if (<= width limit)
-        str
-      (truncate-string-to-width str limit nil nil t t))))
 
 (defun js-log-annotate-parent-node (node)
-  "Annotate NODE."
+  "Annotate parent NODE with capitalized, space-separated type.
+
+Argument NODE is the node whose parent will be annotated."
   (when-let* ((parent (treesit-node-parent node))
               (str (treesit-node-type parent)))
     (capitalize (replace-regexp-in-string "_" "\s" str))))
 
 
 (defun js-log-get-object-pattern-ids (node)
-  "Return identifiers from NODE.
-NODE's type should be object_pattern."
+  "Return filtered NODE IDs matching specific patterns.
+
+Argument NODE is a Treesit node to extract pattern IDs from."
   (seq-filter
    (apply-partially
     #'js-log-check-node-type
@@ -287,22 +295,31 @@ NODE's type should be object_pattern."
                           (lambda (item) item))))))
 
 (defun js-log-current--node-child-p (node parent)
-  "Check whether PARENT includes NODE."
+  "Return sparse tree if NODE is a child of PARENT.
+
+Argument NODE is the node to check if it is a child.
+
+Argument PARENT is the node to check against for being a parent of NODE."
   (remove nil
           (flatten-list
-           (treesit-induce-sparse-tree parent
-                                       (lambda (it)
-                                         (treesit-node-eq
-                                          it
-                                          node))))))
+           (treesit-induce-sparse-tree
+            parent
+            (lambda (it)
+              (treesit-node-eq
+               it
+               node))))))
+
 (defun js-log-current-node-child-p (node)
-  "Check whether NODE includes `js-log-current-node'.
-If `js-log-current-node' is nil, return t."
+  "Check if NODE is a child of the current logging node.
+
+Argument NODE is the node to check if it is a child of the current node."
   (or (not js-log-current-node)
       (js-log-current--node-child-p node js-log-current-node)))
 
 (defun js-log-get-node-id (node)
-  "Return identifier or list of identifiers from NODE on top level."
+  "Extract NODE IDs from a JavaScript syntax tree.
+
+Argument NODE is a Treesit node to be processed by the function."
   (pcase (treesit-node-type node)
     ("import_statement"
      (let ((clauses (flatten-list (cdr (treesit-induce-sparse-tree
@@ -430,8 +447,25 @@ If `js-log-current-node' is nil, return t."
                          "("))
          found)))))
 
+(defun js-log-get-parents ()
+  "Return list of parent nodes for a given node."
+  (let* ((parent-node (js-log-get-top-parent-node))
+         (node (save-excursion
+                 (js-log-backward-whitespace-ignore-comments)
+                 (treesit-node-at (point) nil t)))
+         (path (list parent-node)))
+    (while (setq parent-node
+                 (seq-find (apply-partially
+                            #'js-log-current--node-child-p node)
+                           (treesit-node-children
+                            parent-node)))
+      (push parent-node path))
+    (reverse path)))
+
+
+
 (defun js-log--node-list-ascending ()
-  "Return ascending node list."
+  "Return ascending list of nodes from current point."
   (cl-loop for node = (treesit-node-at (point))
            then (treesit-node-parent node) while node
            if (eq (treesit-node-start node)
@@ -439,7 +473,7 @@ If `js-log-current-node' is nil, return t."
            collect node))
 
 (defun js-log-get-node-list-ascending ()
-  "Return ascending node list."
+  "Return ascending list of nodes from point."
   (save-excursion
     (skip-chars-backward "\s\t\n\r\f")
     (while (and (equal "comment" (treesit-node-type (treesit-node-at (point))))
@@ -458,100 +492,248 @@ If `js-log-current-node' is nil, return t."
             (append node-list (list parent))
           node-list)))))
 
-(defun js-log-node-up ()
-  "Return nodes before current position and in current scope."
-  (when-let ((node (js-log-last-item
-                    (js-log-get-node-list-ascending))))
-    (goto-char (treesit-node-start node))
-    node))
+(defun js-log--get-node-or-children (node)
+  "Return NODE or its children as a cons cell.
 
-(defun js-log-annotate-path (&rest _)
-  "Return nodes before current position and in current scope."
-  (when-let ((path (js-log-get-obj-path)))
-    (string-join (mapcar #'treesit-node-text path) ".")))
+Argument NODE is a Treesitter node object."
+  (let* ((children (treesit-node-children node t)))
+    (if (not children)
+        node
+      (cons node (mapcar #'js-log--get-node-or-children children)))))
 
-(defun js-log-get-up ()
-  "Return nodes before current position and in current scope."
-  (let ((initial-node (treesit-node-at (point)))
-        (node))
-    (save-excursion
-      (while
-          (setq node
-                (when-let ((n (js-log-last-item
-                               (js-log-get-node-list-ascending))))
-                  (if (not initial-node)
-                      (setq initial-node n)
-                    (when (js-log-current--node-child-p
-                           initial-node n)
-                      n)))))
-      (goto-char (treesit-node-start node)))))
 
-(defun js-log-get-obj-path ()
-  "Return nodes before current position and in current scope."
-  (save-excursion
-    (let ((nodes)
-          (node)
-          (prev-start)
-          (initial-node (treesit-node-at (point))))
-      (pcase (treesit-node-type initial-node)
-        (":"
-         (goto-char
-          (treesit-node-start
-           (treesit-node-prev-sibling
-            initial-node)))
-         (setq initial-node (treesit-node-at (point)))))
-      (while (setq node
-                   (when-let ((n (and (not (equal (point) prev-start))
-                                      (js-log-get-node-list-ascending))))
-                     (pcase (treesit-node-type (car n))
-                       (_
-                        (if (not initial-node)
-                            (setq n(js-log-last-item n))
-                          (and (js-log-current--node-child-p
-                                initial-node (js-log-last-item
-                                              n))
-                               (js-log-last-item
-                                n)))))))
-        (setq prev-start (point))
-        (goto-char (treesit-node-start node))
-        (push node nodes))
-      (remove nil
-              (mapcar
-               (lambda (node)
-                 (pcase (treesit-node-type node)
-                   ("pair"
-                    (treesit-search-subtree
-                     (treesit-node-child
-                      node
-                      0)
-                     (apply-partially
-                      #'js-log-check-node-type
-                      '("property_identifier"
-                        "computed_property_name"))))
-                   ("lexical_declaration"
-                    (if-let ((obj
-                              (treesit-search-subtree
-                               node
-                               "object_pattern"
-                               nil
-                               nil
-                               2)))
-                        (js-log-get-object-pattern-ids
-                         obj)
-                      (treesit-search-subtree
-                       node
-                       (apply-partially
-                        #'js-log-check-node-type
-                        '("identifier"))
-                       nil
-                       t
-                       2)))))
-               (delq nil
-                     (append nodes (list initial-node))))))))
+
+(defun js-log-get-top-parent-node ()
+  "Return top-level parent node of current point."
+  (let ((node (treesit-node-at (point)))
+        (top-level-children (treesit-node-children
+                             (treesit-buffer-root-node))))
+    (seq-find  (lambda (child)
+                 (js-log-current--node-child-p node child))
+               top-level-children)))
+
+(defun js-log-export-it ()
+  "Insert \"export \" before first child of top parent node."
+  (interactive)
+  (let* ((parent-node (js-log-get-top-parent-node))
+         (child (treesit-node-child parent-node 0)))
+    (unless (member (treesit-node-type child) '("export" "import"))
+      (save-excursion
+        (goto-char (treesit-node-start child))
+        (insert "export ")))))
+
+(defun js-log-mark-node (node)
+  "Mark NODE start and end, display its type and field name.
+
+Argument NODE is the tree-sitter node to be marked."
+  (let ((start (treesit-node-start node))
+        (end (treesit-node-end node))
+        (annotation (string-join
+                     (delq nil (list (treesit-node-type node)
+                                     (treesit-node-field-name node)))
+                     " ")))
+    (push-mark-command t)
+    (goto-char start)
+    (push-mark start nil t)
+    (push-mark end)
+    (message annotation)))
+
+(defvar-keymap js-log-expand-repeat-map
+  :doc
+  "Keymap to repeat `next-buffer' and `previous-buffer'.  Used in `repeat-mode'."
+  :repeat t
+  "u" #'js-log-expand-parents-up
+  "m" #'js-log-expand-parents-up
+  "d" #'js-log-expand-parents-down)
+
+(defvar-local js-log-current-parents nil)
+
+(defun js-log-expand-parents-up ()
+
+  "Highlight parent nodes in log buffer."
+  (interactive)
+  (js-log-mark-parent-or-child 1))
+
+(defun js-log-expand-parents-down ()
+  "Highlight parent nodes in log display."
+  (interactive)
+  (js-log-mark-parent-or-child -1))
+
+(defun js-log-mark-parent-or-child (&optional direction)
+  "Highlight parent or child node in log.
+
+Optional argument DIRECTION is an integer that determines the direction to
+navigate through parent or child nodes. It defaults to 1."
+  (unless direction (setq direction 1))
+  (when-let ((node (treesit-node-at (point))))
+    (unless (and js-log-current-parents
+                 (memq last-command '(js-log-expand-parents-up
+                                      js-log-expand-parents-down)))
+      (setq js-log-current-parents (reverse (js-log-get-parents)))
+      (when node
+        (push node js-log-current-parents)))
+    (when-let* ((node-start (and node
+                                 (treesit-node-start node)))
+                (pred (if (> direction 0)
+                          (apply-partially #'> node-start)
+                        (apply-partially #'< node-start)))
+                (items (seq-sort-by #'treesit-node-start pred
+                                    (seq-filter
+                                     (lambda (parent)
+                                       (let* ((parent-start (treesit-node-start
+                                                             parent))
+                                              (res (funcall pred
+                                                            parent-start)))
+                                         res))
+                                     js-log-current-parents)))
+                (next (car items)))
+      (js-log-mark-node next))))
+
+(defun js-log-which-func ()
+  "Display JavaScript function or variable name at point."
+  (let ((parents (js-log-get-parents))
+        (result))
+    (dolist (node parents)
+      (when-let* ((child (treesit-node-child node 0 t))
+                  (text (treesit-node-text child))
+                  (type (treesit-node-type node))
+                  (name
+                   (pcase type
+                     ("pair"
+                      (pcase (treesit-node-type child)
+                        ("property_identifier" text)
+                        ("computed_property_name" text)
+                        ("string" (concat "[" text "]"))))
+                     ("variable_declarator"
+                      (pcase (treesit-node-type child)
+                        ("identifier" text)))
+                     ("method_definition" text)
+                     ("interface_declaration"
+                      (pcase (treesit-node-type child)
+                        ("type_identifier" text)))
+                     ("property_signature"
+                      (pcase (treesit-node-type child)
+                        ("property_identifier" text)))
+                     (_
+                      nil))))
+        (push name result)))
+    (and result
+         (replace-regexp-in-string "\\.\\[" "[" (string-join (reverse result)
+                                                             ".")))))
+
+
+;;;###autoload
+(define-minor-mode js-log-which-func-mode
+  "Display current JavaScript function or variable name path on save.
+
+Automatically log the JavaScript function or variable name path when saving
+files, and ensure `which-function-mode' is active for this feature to work."
+  :lighter " js-log-which-func"
+  :global nil
+  (if js-log-which-func-mode
+      (add-hook 'which-func-functions 'js-log-which-func nil t)
+    (remove-hook 'which-func-functions 'js-log-which-func t))
+  (unless which-function-mode
+    (which-function-mode 1)))
+
+(defun js-log-backward-whitespace-ignore-comments ()
+  "Skip whitespace and comments, move point backward."
+  (skip-chars-backward "\s\t\r\f\n")
+  (let ((node (treesit-node-at (point) nil t))
+        (prev-node))
+    (while
+        (and node
+             (or (not prev-node)
+                 (not (treesit-node-eq prev-node node)))
+             (equal (treesit-node-type node) "comment"))
+      (goto-char (treesit-node-start node))
+      (skip-chars-backward "\s\t\r\f\n")
+      (setq prev-node node)
+      (setq node (treesit-node-at (point) nil t)))))
+
+(defun js-log-parse-node-ids (node)
+  "Extract NODE IDs from a JavaScript AST node.
+
+Argument NODE is a Treesitter node from which to extract identifiers."
+  (let ((ids))
+    (pcase (treesit-node-type node)
+      ((or "arrow_function"
+           "function_declaration"
+           "variable_declarator"
+           "lexical_declaration"
+           "statement_block"
+           "variable_declaration"
+           "expression_statement")
+       (when-let ((children (treesit-node-children node t)))
+         (let ((child))
+           (while (setq child (pop children))
+             (pcase (treesit-node-type child)
+               ((or "identifier"
+                    "shorthand_property_identifier_pattern")
+                (push child ids))
+               ((or "formal_parameters"
+                    "lexical_declaration"
+                    "variable_declarator"
+                    "variable_declaration"
+                    "statement_block")
+                (let ((subchildren (treesit-node-children child t)))
+                  (setq children (append children subchildren))))
+               ((or "required_parameter"
+                    "object_pattern"
+                    "pair_pattern"
+                    "array_pattern"
+                    "rest_pattern")
+                (setq children (append children
+                                       (treesit-node-children
+                                        child t))))))))))
+    ids))
+
+(defun js-log-get-ids-from-parents ()
+  "Extract IDs from parent nodes in a JavaScript AST."
+  (let ((parents (js-log-get-parents))
+        (result))
+    (dolist (node parents)
+      (when-let ((type (treesit-node-type node)))
+        (let ((args (js-log-parse-node-ids node)))
+          (when args
+            (push args result)))))
+    (flatten-list result)))
+
+(defun js-log-get-visible-nodes ()
+  "Collect unique visible JavaScript AST nodes."
+  (delete-dups
+   (seq-uniq
+    (append
+     (js-log-get-ids-from-parents)
+     (js-log-visible-ids))
+    #'treesit-node-eq)))
+
+
+
+(defun js-log-treesit-sparse ()
+  "Display sparse tree representation with node details."
+  (mapcar #'js-log--get-node-or-children
+          (treesit-node-children
+           (treesit-buffer-root-node))))
+
+(defun js-log-get-parents-with-children ()
+  "Return list of parent nodes with their children."
+  (let* ((parent-node (js-log-get-top-parent-node))
+         (node (save-excursion
+                 (js-log-backward-whitespace-ignore-comments)
+                 (treesit-node-at (point) nil t)))
+         (path (list parent-node)))
+    (while (setq parent-node
+                 (seq-find (apply-partially
+                            'js-log-current--node-child-p node)
+                           (treesit-node-children
+                            parent-node)))
+      (push parent-node path))
+    (reverse path)))
 
 
 (defun js-log-node-backward-all ()
-  "Return nodes before current position and in current scope."
+  "Navigate all JavaScript log nodes in reverse."
   (let ((nodes)
         (node)
         (prev-start))
@@ -566,66 +748,81 @@ If `js-log-current-node' is nil, return t."
     nodes))
 
 (defun js-log-node-ids-in-scope ()
-  "Return list of visible in scope identifiers."
+  "Log node IDs from JavaScript scope."
   (let ((nodes (reverse (js-log-node-backward-all)))
         (node)
         (res))
     (while (setq node (pop nodes))
-      (when-let ((item (js-log-get-node-id node)))
+      (when-let ((item (js-log-parse-node-ids node)))
         (push item res)))
     (flatten-list res)))
 
 
 (defun js-log-visible-ids ()
-  "Return list of visible identifiers from all scopes."
+  "Get visible JavaScript node IDs."
   (setq js-log-current-node (or (js-log-last-item
                                  (js-log-get-node-list-ascending))))
-  (let ((ids (or
-              (js-log-node-ids-in-scope)))
-        (prev-scope))
-    (while
-        (setq prev-scope
-              (when-let ((next (car
-                                (js-log-get-node-list-ascending))))
-                (goto-char (treesit-node-start next))
-                (unless (treesit-node-eq next prev-scope)
-                  next)))
-      (setq ids (append ids (js-log-node-ids-in-scope))))
-    (seq-sort-by #'treesit-node-end '< (delete-dups ids))))
+  (save-excursion
+    (let ((ids (or
+                (js-log-node-ids-in-scope)))
+          (prev-scope))
+      (while
+          (setq prev-scope
+                (when-let ((next (car
+                                  (js-log-get-node-list-ascending))))
+                  (goto-char (treesit-node-start next))
+                  (unless (treesit-node-eq next prev-scope)
+                    next)))
+        (setq ids (append ids (js-log-node-ids-in-scope))))
+      ids)))
 
 
 (defun js-log-random-hex-color ()
-  "Return random hexadecimal-color."
+  "Log a random hexadecimal color code."
   (require 'shr-color)
   (cdr (nth (random (1- (length shr-color-html-colors-alist)))
             shr-color-html-colors-alist)))
 
 (defun js-log-get-theme ()
-  "Return string with styles for console.log."
+  "Return CSS string with random background and contrasting text color."
   (let ((color (downcase (js-log-random-hex-color))))
     (if (or (= (length color) 4)
             (= (length color) 7))
         (format "'background-color: %s; color: %s'"
                 color
-                (if (>= (apply #'+ (x-color-values
+                (if (>= (apply #'+ (funcall
+                                    (with-no-warnings
+                                      (if
+                                          (fboundp
+                                           'color-values)
+                                          #'color-values
+                                        #'x-color-values))
                                     color))
-                        (* (apply #'+ (x-color-values "white")) .6))
+                        (* (apply #'+ (funcall
+                                       (with-no-warnings
+                                         (if
+                                             (fboundp
+                                              'color-values)
+                                             #'color-values
+                                           #'x-color-values))
+                                       "white"))
+                           .6))
                     "black"
                   "white")))))
 
-(defvar js-log-nodes-alist nil)
+
 ;;;###autoload
 (defun js-log-minibuffer-preview ()
-  "Jump to current minibuffer candidate."
+  "Display preview of JavaScript log in minibuffer."
   (interactive)
   (let ((cand (js-log-get-current-candidate)))
     (let ((window (minibuffer-selected-window)))
       (when window
         (with-selected-window window
-          (let* ((node (cdr (assoc (cdr cand)
-                                   js-log-nodes-alist)))
-                 (start (treesit-node-start node))
-                 (end (treesit-node-end node)))
+          (when-let* ((node (cdr (assoc (cdr cand)
+                                        js-log-nodes-alist)))
+                      (start (treesit-node-start node))
+                      (end (treesit-node-end node)))
             (goto-char start)
             (pulse-momentary-highlight-region
              start end)))))))
@@ -634,24 +831,41 @@ If `js-log-current-node' is nil, return t."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-j")
                 #'js-log-minibuffer-preview)
-    map))
+    map)
+  "Keymap for minibuffer input with preview functionality on `C-j'.")
+
 
 (defun js-log-read-visible-ids (prompt &optional predicate require-match
                                        initial-input hist def
                                        inherit-input-method)
-  "Read NODES in minibuffer.
-PROMPT is a string to prompt with; normally it ends in a colon and a space.
-See `completing-read' for more details on completion,
-PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
+  "Return list of IDs visible in current JavaScript code scope.
+
+Argument PROMPT is a string to display as the prompt in the minibuffer.
+
+Optional argument PREDICATE is a function to filter the completion candidates.
+
+Optional argument REQUIRE-MATCH is a boolean; if non-nil, the user is not
+allowed to exit unless the input matches one of the completions.
+
+Optional argument INITIAL-INPUT is a string to insert before reading input.
+
+Optional argument HIST is a symbol representing a history list and/or a cons
+cell (HISTVAR . HISTPOS).
+
+Optional argument DEF is the default value or a list of default values.
+
+Optional argument INHERIT-INPUT-METHOD, if non-nil, means the minibuffer
+inherits the current input method and the setting of
+`enable-multibyte-characters'."
   (setq js-log-nodes-alist
-        (save-excursion
-          (mapcar #'js-log-node-cons
-                  (js-log-visible-ids))))
+        (reverse (mapcar #'js-log-node-cons
+                         (seq-sort-by #'treesit-node-end #'<
+                                      (js-log-get-visible-nodes)))))
   (let* ((annot-fn (lambda (it)
                      (format
                       (propertize
                        (concat (propertize " " 'display '(space :align-to
-                                                                40))
+                                                          40))
                                " %s")
                        'face 'completions-annotations)
                       (if-let ((node
@@ -666,7 +880,11 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
         (lambda ()
           (use-local-map
            (make-composed-keymap js-log-minibuffer-map
-                                 (current-local-map))))
+                                 (current-local-map)))
+          (add-hook 'after-change-functions
+                    (lambda (&rest _)
+                      (js-log-minibuffer-preview)) nil
+                    t))
       (save-excursion
         (completing-read prompt
                          (lambda (str pred action)
@@ -681,18 +899,18 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
 
 ;;;###autoload
 (defun js-log-insert-complete ()
-  "Read js items and insert them with console.log."
+  "Insert JavaScript identifier completion at point."
   (interactive)
-  (let ((word (when-let ((sym (symbol-at-point)))
-                (symbol-name
-                 sym))))
-    (when-let
-        ((item
-          (js-log-read-visible-ids "Symbol: "
-                                   (when word
-                                     (lambda (it)
-                                       (and (not (equal word it))
-                                            (string-prefix-p word it)))))))
+  (let ((word
+         (when-let ((sym (symbol-at-point)))
+           (symbol-name
+            sym))))
+    (when-let ((item
+                (js-log-read-visible-ids "Symbol: "
+                                         (when word
+                                           (lambda (it)
+                                             (and (not (equal word it))
+                                                  (string-prefix-p word it)))))))
       (let ((parts))
         (setq parts
               (if-let* ((sym (symbol-at-point))
@@ -707,7 +925,7 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
 
 ;;;###autoload
 (defun js-log-jump-to-symbol ()
-  "Read js items and insert them with console.log."
+  "Navigate to chosen JavaScript symbol location."
   (interactive)
   (when-let* ((item (js-log-read-visible-ids "Symbol: "))
               (node (cdr (assoc item js-log-nodes-alist))))
@@ -715,14 +933,17 @@ PREDICATE REQUIRE-MATCH INITIAL-INPUT HIST DEF INHERIT-INPUT-METHOD."
 
 ;;;###autoload
 (defun js-log ()
-  "Read js items and insert them with console.log."
+  "Insert formatted console.log with metadata and theme."
   (interactive)
-  (let ((buff (buffer-name (current-buffer)))
-        (meta)
+  (let ((meta)
         (formatted)
         (theme (js-log-get-theme)))
     (setq meta (mapconcat (apply-partially #'format "%s")
-                          (list buff (line-number-at-pos (point)))
+                          (delq nil
+                                (list (or (js-log-which-func)
+                                          (treesit-add-log-current-defun))
+                                      (buffer-name (current-buffer))
+                                      (line-number-at-pos (point))))
                           " "))
     (pcase (treesit-node-type
             (js-log-last-item (js-log-get-node-list-ascending)))
