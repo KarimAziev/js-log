@@ -32,7 +32,6 @@
 
 (defvar shr-color-html-colors-alist)
 
-
 (require 'treesit)
 
 (defvar js-log-node-types '(">>" "<<" "~" "&=" "|=" ">>>=" "do"
@@ -145,6 +144,11 @@ Argument NODE is the Treesit node whose TYPE is being checked."
     (equal (treesit-node-type node) type)))
 
 (defvar-local js-log-current-node nil)
+
+(defun js-log-get-current-node ()
+  "Retrieve the last node from an ascending list."
+  (js-log-last-item
+   (js-log-get-node-list-ascending)))
 
 (defvar js-log-nodes-alist nil
   "Alist mapping JavaScript AST node types to logging functions.")
@@ -278,7 +282,6 @@ Argument NODE is the node whose parent will be annotated."
   (when-let* ((parent (treesit-node-parent node))
               (str (treesit-node-type parent)))
     (capitalize (replace-regexp-in-string "_" "\s" str))))
-
 
 (defun js-log-get-object-pattern-ids (node)
   "Return filtered NODE IDs matching specific patterns.
@@ -462,8 +465,6 @@ Argument NODE is a Treesit node to be processed by the function."
       (push parent-node path))
     (reverse path)))
 
-
-
 (defun js-log--node-list-ascending ()
   "Return ascending list of nodes from current point."
   (cl-loop for node = (treesit-node-at (point))
@@ -500,8 +501,6 @@ Argument NODE is a Treesitter node object."
     (if (not children)
         node
       (cons node (mapcar #'js-log--get-node-or-children children)))))
-
-
 
 (defun js-log-get-top-parent-node ()
   "Return top-level parent node of current point."
@@ -549,7 +548,6 @@ Argument NODE is the tree-sitter node to be marked."
 (defvar-local js-log-current-parents nil)
 
 (defun js-log-expand-parents-up ()
-
   "Highlight parent nodes in log buffer."
   (interactive)
   (js-log-mark-parent-or-child 1))
@@ -621,7 +619,6 @@ navigate through parent or child nodes. It defaults to 1."
          (replace-regexp-in-string "\\.\\[" "[" (string-join (reverse result)
                                                              ".")))))
 
-
 ;;;###autoload
 (define-minor-mode js-log-which-func-mode
   "Display current JavaScript function or variable name path on save.
@@ -650,6 +647,16 @@ files, and ensure `which-function-mode' is active for this feature to work."
       (skip-chars-backward "\s\t\r\f\n")
       (setq prev-node node)
       (setq node (treesit-node-at (point) nil t)))))
+
+(defun js-log-position-within-node (position node)
+  "Check if POSITION is within NODE's start and end.
+
+Argument POSITION is the character position within the buffer.
+
+Argument NODE is the Treesitter node to check the POSITION against."
+  (< (treesit-node-start node)
+     position
+     (treesit-node-end node)))
 
 (defun js-log-parse-node-ids (node)
   "Extract NODE IDs from a JavaScript AST node.
@@ -685,15 +692,71 @@ Argument NODE is a Treesitter node from which to extract identifiers."
                     "rest_pattern")
                 (setq children (append children
                                        (treesit-node-children
-                                        child t))))))))))
+                                        child t)))))))))
+      ((and
+        "for_statement"
+        (guard (js-log-position-within-node (point) node)))
+       (when-let ((children (treesit-node-children node t)))
+         (let ((child))
+           (while (setq child (pop children))
+             (pcase (treesit-node-type child)
+               ((or "identifier"
+                    "shorthand_property_identifier_pattern")
+                (push child ids))
+               ("variable_declarator"
+                (setq children (append children
+                                       (treesit-node-children child t))))
+               ((or "lexical_declaration"
+                    "variable_declaration")
+                (let ((subchildren (treesit-node-children child t)))
+                  (setq children subchildren))))))))
+      ((and
+        "for_in_statement"
+        (guard (js-log-position-within-node (point) node)))
+       (when-let ((children (treesit-node-children node t)))
+         (let ((child))
+           (while (setq child (pop children))
+             (pcase (treesit-node-type child)
+               ((or "identifier"
+                    "shorthand_property_identifier_pattern")
+                (push child ids))
+               ("variable_declarator"
+                (setq children (append children
+                                       (treesit-node-children child t))))
+               ((or "lexical_declaration"
+                    "variable_declaration")
+                (let ((subchildren (treesit-node-children child t)))
+                  (setq children subchildren))))))))
+      ("function"
+       (when-let* ((children (treesit-node-children node t))
+                   (statement-block (seq-find (apply-partially
+                                               #'js-log-check-node-type
+                                               "statement_block")
+                                              children)))
+         (when (js-log-position-within-node (point)
+                                            statement-block)
+           (let ((child))
+             (while (setq child (pop children))
+               (pcase (treesit-node-type child)
+                 ((or "identifier"
+                      "shorthand_property_identifier_pattern")
+                  (push child ids))
+                 ("formal_parameters"
+                  (setq children (append children
+                                         (treesit-node-children child t))))
+                 ("required_parameter"
+                  (let ((subchildren (treesit-node-children child t)))
+                    (setq children (append children subchildren)))))))))))
     ids))
 
 (defun js-log-get-ids-from-parents ()
   "Extract IDs from parent nodes in a JavaScript AST."
   (let ((parents (js-log-get-parents))
-        (result))
+        (result)
+        (pos (point)))
     (dolist (node parents)
-      (when-let ((type (treesit-node-type node)))
+      (when-let ((type (and (js-log-position-within-node pos node)
+                            (treesit-node-type node))))
         (let ((args (js-log-parse-node-ids node)))
           (when args
             (push args result)))))
@@ -707,8 +770,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
      (js-log-get-ids-from-parents)
      (js-log-visible-ids))
     #'treesit-node-eq)))
-
-
 
 (defun js-log-treesit-sparse ()
   "Display sparse tree representation with node details."
@@ -730,7 +791,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
                             parent-node)))
       (push parent-node path))
     (reverse path)))
-
 
 (defun js-log-node-backward-all ()
   "Navigate all JavaScript log nodes in reverse."
@@ -757,7 +817,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
         (push item res)))
     (flatten-list res)))
 
-
 (defun js-log-visible-ids ()
   "Get visible JavaScript node IDs."
   (setq js-log-current-node (or (js-log-last-item
@@ -775,7 +834,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
                     next)))
         (setq ids (append ids (js-log-node-ids-in-scope))))
       ids)))
-
 
 (defun js-log-random-hex-color ()
   "Log a random hexadecimal color code."
@@ -810,7 +868,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
                     "black"
                   "white")))))
 
-
 ;;;###autoload
 (defun js-log-minibuffer-preview ()
   "Display preview of JavaScript log in minibuffer."
@@ -833,7 +890,6 @@ Argument NODE is a Treesitter node from which to extract identifiers."
                 #'js-log-minibuffer-preview)
     map)
   "Keymap for minibuffer input with preview functionality on `C-j'.")
-
 
 (defun js-log-read-visible-ids (prompt &optional predicate require-match
                                        initial-input hist def
@@ -858,9 +914,9 @@ Optional argument INHERIT-INPUT-METHOD, if non-nil, means the minibuffer
 inherits the current input method and the setting of
 `enable-multibyte-characters'."
   (setq js-log-nodes-alist
-        (reverse (mapcar #'js-log-node-cons
-                         (seq-sort-by #'treesit-node-end #'<
-                                      (js-log-get-visible-nodes)))))
+        (mapcar #'js-log-node-cons
+                (seq-sort-by #'treesit-node-end #'<
+                             (js-log-get-visible-nodes))))
   (let* ((annot-fn (lambda (it)
                      (format
                       (propertize
@@ -905,12 +961,13 @@ inherits the current input method and the setting of
          (when-let ((sym (symbol-at-point)))
            (symbol-name
             sym))))
-    (when-let ((item
-                (js-log-read-visible-ids "Symbol: "
-                                         (when word
-                                           (lambda (it)
-                                             (and (not (equal word it))
-                                                  (string-prefix-p word it)))))))
+    (when-let
+        ((item
+          (js-log-read-visible-ids "Symbol: "
+                                   (when word
+                                     (lambda (it)
+                                       (and (not (equal word it))
+                                            (string-prefix-p word it)))))))
       (let ((parts))
         (setq parts
               (if-let* ((sym (symbol-at-point))
@@ -935,9 +992,17 @@ inherits the current input method and the setting of
 (defun js-log ()
   "Insert formatted console.log with metadata and theme."
   (interactive)
-  (let ((meta)
-        (formatted)
-        (theme (js-log-get-theme)))
+  (let* ((pos (point))
+         (pred (lambda (str)
+                 (let* ((node
+                         (cdr
+                          (assoc-string str
+                                        js-log-nodes-alist)))
+                        (start (treesit-node-start node)))
+                   (> pos start))))
+         (theme (js-log-get-theme))
+         (meta)
+         (formatted))
     (setq meta (mapconcat (apply-partially #'format "%s")
                           (delq nil
                                 (list (or (js-log-which-func)
@@ -967,7 +1032,9 @@ inherits the current input method and the setting of
                                              (treesit-node-text
                                               (treesit-node-at
                                                (point))))))))))
-       (let ((item (js-log-read-visible-ids "Symbol: "))
+       (let ((item
+              (js-log-read-visible-ids "Symbol: "
+                                       pred))
              (word (thing-at-point 'symbol t)))
          (cond ((and word (string-prefix-p word item))
                 (insert (substring-no-properties item (length word))))
@@ -995,7 +1062,8 @@ inherits the current input method and the setting of
                   (insert
                    item ",")))))
       (_
-       (let ((marked (list (js-log-read-visible-ids "Symbol: ")))
+       (let ((marked (list (js-log-read-visible-ids "Symbol: "
+                                                    pred)))
              (indent-level)
              (indent-str)
              (result))
