@@ -507,10 +507,18 @@ Argument NODE is a Treesitter node object."
   (let ((node (treesit-node-at (point)))
         (top-level-children (treesit-node-children
                              (treesit-buffer-root-node))))
-    (seq-find  (lambda (child)
-                 (js-log-current--node-child-p node child))
+    (seq-find  (lambda (top-child)
+                 (delq nil
+                       (flatten-list
+                        (treesit-induce-sparse-tree
+                         top-child
+                         (lambda (it)
+                           (treesit-node-eq
+                            it
+                            node))))))
                top-level-children)))
 
+;;;###autoload
 (defun js-log-export-it ()
   "Insert \"export \" before first child of top parent node."
   (interactive)
@@ -537,6 +545,36 @@ Argument NODE is the tree-sitter node to be marked."
     (push-mark end)
     (message annotation)))
 
+;;;###autoload
+(defun js-log-mark-top-parent ()
+  "Mark the top-level parent node of the current point in a JavaScript file."
+  (interactive)
+  (when-let ((parent-node (js-log-get-top-parent-node)))
+    (js-log-mark-node parent-node)))
+
+;;;###autoload
+(defun js-log-mark-narrow-to-top ()
+  "Narrow buffer to the top-level parent node of the current point."
+  (interactive)
+  (when-let* ((parent-node (js-log-get-top-parent-node))
+              (start (treesit-node-start parent-node))
+              (end (treesit-node-end parent-node)))
+    (narrow-to-region start end)))
+
+;;;###autoload
+(defun js-log-narrow-dwim ()
+  "Narrow buffer to selected region or top-level JavaScript node."
+  (interactive)
+  (pcase-let ((`(,start . ,end)
+               (if (and (region-active-p)
+                        (use-region-p))
+                   (cons (region-beginning)
+                         (region-end))
+                 (let ((parent-node (js-log-get-top-parent-node)))
+                   (cons (treesit-node-start parent-node)
+                         (treesit-node-end parent-node))))))
+    (narrow-to-region start end)))
+
 (defvar-keymap js-log-expand-repeat-map
   :doc
   "Keymap to repeat `next-buffer' and `previous-buffer'.  Used in `repeat-mode'."
@@ -547,11 +585,13 @@ Argument NODE is the tree-sitter node to be marked."
 
 (defvar-local js-log-current-parents nil)
 
+;;;###autoload
 (defun js-log-expand-parents-up ()
   "Highlight parent nodes in log buffer."
   (interactive)
   (js-log-mark-parent-or-child 1))
 
+;;;###autoload
 (defun js-log-expand-parents-down ()
   "Highlight parent nodes in log display."
   (interactive)
@@ -628,8 +668,8 @@ files, and ensure `which-function-mode' is active for this feature to work."
   :lighter " js-log-which-func"
   :global nil
   (if js-log-which-func-mode
-      (add-hook 'which-func-functions 'js-log-which-func nil t)
-    (remove-hook 'which-func-functions 'js-log-which-func t))
+      (add-hook 'which-func-functions #'js-log-which-func nil t)
+    (remove-hook 'which-func-functions #'js-log-which-func t))
   (unless which-function-mode
     (which-function-mode 1)))
 
@@ -786,7 +826,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
          (path (list parent-node)))
     (while (setq parent-node
                  (seq-find (apply-partially
-                            'js-log-current--node-child-p node)
+                            #'js-log-current--node-child-p node)
                            (treesit-node-children
                             parent-node)))
       (push parent-node path))
