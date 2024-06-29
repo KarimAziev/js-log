@@ -1045,8 +1045,8 @@ inherits the current input method and the setting of
          (formatted))
     (setq meta (mapconcat (apply-partially #'format "%s")
                           (delq nil
-                                (list (or (js-log-which-func)
-                                          (treesit-add-log-current-defun))
+                                (list (ignore-errors (or (js-log-which-func)
+                                                        (treesit-add-log-current-defun)))
                                       (buffer-name (current-buffer))
                                       (line-number-at-pos (point))))
                           " "))
