@@ -452,11 +452,11 @@ Argument NODE is a Treesit node to be processed by the function."
 
 (defun js-log-get-parents ()
   "Return list of parent nodes for a given node."
-  (let* ((parent-node (js-log-get-top-parent-node))
-         (node (save-excursion
-                 (js-log-backward-whitespace-ignore-comments)
-                 (treesit-node-at (point) nil t)))
-         (path (list parent-node)))
+  (when-let* ((parent-node (js-log-get-top-parent-node))
+              (node (save-excursion
+                      (js-log-backward-whitespace-ignore-comments)
+                      (treesit-node-at (point) nil t)))
+              (path (list parent-node)))
     (while (setq parent-node
                  (seq-find (apply-partially
                             #'js-log-current--node-child-p node)
