@@ -457,7 +457,15 @@ Argument POS is the position in the buffer to find the node."
   (let ((node (treesit-node-at pos))
         (parents))
     (while (setq node (treesit-node-parent node))
-      (push node parents))
+      (push node parents))))
+
+(defun js-log--node-list-ascending ()
+  "Return ascending list of nodes from current point."
+  (cl-loop for node = (treesit-node-at (point))
+           then (treesit-node-parent node) while node
+           if (eq (treesit-node-start node)
+                  (point))
+           collect node))
 
 (defun js-log-get-node-list-ascending ()
   "Return ascending list of nodes from point."
