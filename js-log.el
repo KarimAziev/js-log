@@ -450,28 +450,14 @@ Argument NODE is a Treesit node to be processed by the function."
                          "("))
          found)))))
 
-(defun js-log-get-parents ()
-  "Return list of parent nodes for a given node."
-  (when-let* ((parent-node (js-log-get-top-parent-node))
-              (node (save-excursion
-                      (js-log-backward-whitespace-ignore-comments)
-                      (treesit-node-at (point) nil t)))
-              (path (list parent-node)))
-    (while (setq parent-node
-                 (seq-find (apply-partially
-                            #'js-log-current--node-child-p node)
-                           (treesit-node-children
-                            parent-node)))
-      (push parent-node path))
-    (reverse path)))
+(defun js-log-get-parents (pos)
+  "Return a list of parent nodes starting from the node at POS.
 
-(defun js-log--node-list-ascending ()
-  "Return ascending list of nodes from current point."
-  (cl-loop for node = (treesit-node-at (point))
-           then (treesit-node-parent node) while node
-           if (eq (treesit-node-start node)
-                  (point))
-           collect node))
+Argument POS is the position in the buffer to find the node."
+  (let ((node (treesit-node-at pos))
+        (parents))
+    (while (setq node (treesit-node-parent node))
+      (push node parents))
 
 (defun js-log-get-node-list-ascending ()
   "Return ascending list of nodes from point."
@@ -493,6 +479,56 @@ Argument NODE is a Treesit node to be processed by the function."
             (append node-list (list parent))
           node-list)))))
 
+
+
+
+(defun js-log--get-requires ()
+  "Return a reversed list of parent nodes for `require' call expressions."
+  (nreverse
+   (let ((requires (treesit-query-capture
+                    (treesit-buffer-root-node 'typescript)
+                    '((call_expression
+                       function: (identifier) @function
+                       arguments: (arguments (string) @string-arg)
+                       (:match "require" @function))))))
+     (seq-reduce (lambda (acc cell)
+                   (pcase-let* ((`(,type . ,node) cell)
+                                (pos (treesit-node-start node)))
+                     (pcase type
+                       ('string-arg acc)
+                       (_ (setq acc (push (seq-drop (js-log-get-parents pos) 1)
+                                          acc))))))
+                 requires '()))))
+
+(defun js-log--capture-vue-script-node ()
+  "Capture nodes matching \"script_element\" in a Vue buffer's syntax tree."
+  (treesit-query-capture (treesit-buffer-root-node 'vue)
+                         (progn
+                           (string-join
+                            (seq-map (lambda (ct)
+                                       (format "(%s) @entity" ct))
+                                     (list "script_element"))
+                            "\n"))))
+
+
+(defun js-log--get-imports ()
+  "Capture and return `require' call and `import' statements in TypeScript."
+  (let ((requires (treesit-query-capture
+                   (treesit-buffer-root-node 'typescript)
+                   '((call_expression
+                      function: (identifier) @function
+                      arguments: (arguments (string) @string-arg)
+                      (:match "require" @function)))))
+        (imports (treesit-query-capture (treesit-buffer-root-node 'typescript)
+                                        (progn
+                                          (string-join
+                                           (seq-map
+                                            (lambda (ct)
+                                              (format "(%s) @entity" ct))
+                                            (list "import_statement"))
+                                           "\n")))))
+    (append requires imports)))
+
 (defun js-log--get-node-or-children (node)
   "Return NODE or its children as a cons cell.
 
@@ -506,7 +542,7 @@ Argument NODE is a Treesitter node object."
   "Return top-level parent node of current point."
   (let ((node (treesit-node-at (point)))
         (top-level-children (treesit-node-children
-                             (treesit-buffer-root-node))))
+                             (treesit-buffer-root-node 'typescript))))
     (seq-find  (lambda (top-child)
                  (delq nil
                        (flatten-list
@@ -607,7 +643,7 @@ navigate through parent or child nodes. It defaults to 1."
     (unless (and js-log-current-parents
                  (memq last-command '(js-log-expand-parents-up
                                       js-log-expand-parents-down)))
-      (setq js-log-current-parents (reverse (js-log-get-parents)))
+      (setq js-log-current-parents (reverse (js-log-get-parents (point))))
       (when node
         (push node js-log-current-parents)))
     (when-let* ((node-start (and node
@@ -629,7 +665,7 @@ navigate through parent or child nodes. It defaults to 1."
 
 (defun js-log-which-func ()
   "Display JavaScript function or variable name at point."
-  (let ((parents (js-log-get-parents))
+  (let ((parents (js-log-get-parents (point)))
         (result))
     (dolist (node parents)
       (when-let* ((child (treesit-node-child node 0 t))
@@ -791,7 +827,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
 
 (defun js-log-get-ids-from-parents ()
   "Extract IDs from parent nodes in a JavaScript AST."
-  (let ((parents (js-log-get-parents))
+  (let ((parents (js-log-get-parents (point)))
         (result)
         (pos (point)))
     (dolist (node parents)
@@ -811,11 +847,13 @@ Argument NODE is a Treesitter node from which to extract identifiers."
      (js-log-visible-ids))
     #'treesit-node-eq)))
 
-(defun js-log-treesit-sparse ()
-  "Display sparse tree representation with node details."
+(defun js-log-treesit-sparse (&optional language)
+  "Display sparse tree representation with node details.
+
+If LANGUAGE is non-nil, use the first parser for LANGUAGE."
   (mapcar #'js-log--get-node-or-children
           (treesit-node-children
-           (treesit-buffer-root-node))))
+           (treesit-buffer-root-node language))))
 
 (defun js-log-get-parents-with-children ()
   "Return list of parent nodes with their children."
