@@ -225,7 +225,7 @@ Argument NODE is the Treesit node whose TYPE is being checked."
     (run-hook-wrapped
      'js-log-minibuffer-candidate-finders
      (lambda (fun)
-       (when-let ((result (funcall fun)))
+       (when-let* ((result (funcall fun)))
          (when (and (cdr-safe result)
                     (stringp (cdr-safe result))
                     (not (string-empty-p (cdr-safe result))))
@@ -349,7 +349,7 @@ Argument NODE is a Treesit node to be processed by the function."
                                            nil t 2))
                                         (treesit-node-children node))))))
     ("lexical_declaration"
-     (if-let ((obj (treesit-search-subtree node
+     (if-let* ((obj (treesit-search-subtree node
                                            "object_pattern"
                                            nil
                                            nil
@@ -361,7 +361,7 @@ Argument NODE is a Treesit node to be processed by the function."
                                 '("identifier"))
                                nil t 2)))
     ("object"
-     (if-let ((obj (treesit-search-subtree node
+     (if-let* ((obj (treesit-search-subtree node
                                            "object_pattern"
                                            nil
                                            nil
@@ -396,7 +396,7 @@ Argument NODE is a Treesit node to be processed by the function."
     ((or "arrow_function"
          "function")
      (when (js-log-current-node-child-p node)
-       (when-let ((children (treesit-node-children
+       (when-let* ((children (treesit-node-children
                              node)))
          (cond ((js-log-check-node-type
                  '("identifier"
@@ -593,7 +593,7 @@ Argument NODE is the tree-sitter node to be marked."
 (defun js-log-mark-top-parent ()
   "Mark the top-level parent node of the current point in a JavaScript file."
   (interactive)
-  (when-let ((parent-node (js-log-get-top-parent-node)))
+  (when-let* ((parent-node (js-log-get-top-parent-node)))
     (js-log-mark-node parent-node)))
 
 ;;;###autoload
@@ -647,7 +647,7 @@ Argument NODE is the tree-sitter node to be marked."
 Optional argument DIRECTION is an integer that determines the direction to
 navigate through parent or child nodes. It defaults to 1."
   (unless direction (setq direction 1))
-  (when-let ((node (treesit-node-at (point))))
+  (when-let* ((node (treesit-node-at (point))))
     (unless (and js-log-current-parents
                  (memq last-command '(js-log-expand-parents-up
                                       js-log-expand-parents-down)))
@@ -755,7 +755,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
            "statement_block"
            "variable_declaration"
            "expression_statement")
-       (when-let ((children (treesit-node-children node t)))
+       (when-let* ((children (treesit-node-children node t)))
          (let ((child))
            (while (setq child (pop children))
              (pcase (treesit-node-type child)
@@ -780,7 +780,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
       ((and
         "for_statement"
         (guard (js-log-position-within-node (point) node)))
-       (when-let ((children (treesit-node-children node t)))
+       (when-let* ((children (treesit-node-children node t)))
          (let ((child))
            (while (setq child (pop children))
              (pcase (treesit-node-type child)
@@ -797,7 +797,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
       ((and
         "for_in_statement"
         (guard (js-log-position-within-node (point) node)))
-       (when-let ((children (treesit-node-children node t)))
+       (when-let* ((children (treesit-node-children node t)))
          (let ((child))
            (while (setq child (pop children))
              (pcase (treesit-node-type child)
@@ -839,7 +839,7 @@ Argument NODE is a Treesitter node from which to extract identifiers."
         (result)
         (pos (point)))
     (dolist (node parents)
-      (when-let ((type (and (js-log-position-within-node pos node)
+      (when-let* ((type (and (js-log-position-within-node pos node)
                             (treesit-node-type node))))
         (let ((args (js-log-parse-node-ids node)))
           (when args
@@ -883,7 +883,7 @@ If LANGUAGE is non-nil, use the first parser for LANGUAGE."
   (let ((nodes)
         (node)
         (prev-start))
-    (while (setq node (when-let ((n (and (not (equal (point) prev-start))
+    (while (setq node (when-let* ((n (and (not (equal (point) prev-start))
                                          (js-log-get-node-list-ascending))))
                         (pcase (treesit-node-type (car n))
                           ("{" nil)
@@ -899,7 +899,7 @@ If LANGUAGE is non-nil, use the first parser for LANGUAGE."
         (node)
         (res))
     (while (setq node (pop nodes))
-      (when-let ((item (js-log-parse-node-ids node)))
+      (when-let* ((item (js-log-parse-node-ids node)))
         (push item res)))
     (flatten-list res)))
 
@@ -913,7 +913,7 @@ If LANGUAGE is non-nil, use the first parser for LANGUAGE."
           (prev-scope))
       (while
           (setq prev-scope
-                (when-let ((next (car
+                (when-let* ((next (car
                                   (js-log-get-node-list-ascending))))
                   (goto-char (treesit-node-start next))
                   (unless (treesit-node-eq next prev-scope)
@@ -1010,7 +1010,7 @@ inherits the current input method and the setting of
                                                           40))
                                " %s")
                        'face 'completions-annotations)
-                      (if-let ((node
+                      (if-let* ((node
                                 (cdr (assoc (substring-no-properties
                                              it)
                                             js-log-nodes-alist))))
@@ -1044,10 +1044,10 @@ inherits the current input method and the setting of
   "Insert JavaScript identifier completion at point."
   (interactive)
   (let ((word
-         (when-let ((sym (symbol-at-point)))
+         (when-let* ((sym (symbol-at-point)))
            (symbol-name
             sym))))
-    (when-let
+    (when-let*
         ((item
           (js-log-read-visible-ids "Symbol: "
                                    (when word
