@@ -471,10 +471,14 @@ Argument POS is the position in the buffer to find the node."
   "Return ascending list of nodes from point."
   (save-excursion
     (skip-chars-backward "\s\t\n\r\f")
-    (while (and (equal "comment" (treesit-node-type (treesit-node-at (point))))
-                (not (bobp)))
-      (goto-char (treesit-node-start (treesit-node-at (point))))
-      (skip-chars-backward "\s\t\n\r\f"))
+    (let ((prev-pos))
+      (while (and
+              (not (equal prev-pos (point)))
+              (equal "comment" (treesit-node-type (treesit-node-at (point))))
+              (not (bobp)))
+        (goto-char (treesit-node-start (treesit-node-at (point))))
+        (skip-chars-backward "\s\t\n\r\f")
+        (setq prev-pos (point))))
     (let* ((node-list
             (js-log--node-list-ascending))
            (largest-node (js-log-last-item node-list))
@@ -884,7 +888,7 @@ If LANGUAGE is non-nil, use the first parser for LANGUAGE."
         (node)
         (prev-start))
     (while (setq node (when-let* ((n (and (not (equal (point) prev-start))
-                                         (js-log-get-node-list-ascending))))
+                                          (js-log-get-node-list-ascending))))
                         (pcase (treesit-node-type (car n))
                           ("{" nil)
                           (_ (js-log-last-item n)))))
@@ -914,7 +918,7 @@ If LANGUAGE is non-nil, use the first parser for LANGUAGE."
       (while
           (setq prev-scope
                 (when-let* ((next (car
-                                  (js-log-get-node-list-ascending))))
+                                   (js-log-get-node-list-ascending))))
                   (goto-char (treesit-node-start next))
                   (unless (treesit-node-eq next prev-scope)
                     next)))
@@ -1011,9 +1015,9 @@ inherits the current input method and the setting of
                                " %s")
                        'face 'completions-annotations)
                       (if-let* ((node
-                                (cdr (assoc (substring-no-properties
-                                             it)
-                                            js-log-nodes-alist))))
+                                 (cdr (assoc (substring-no-properties
+                                              it)
+                                             js-log-nodes-alist))))
                           (js-log-annotate-parent-node node)
                         ""))))
          (strs (mapcar #'car
@@ -1087,17 +1091,18 @@ inherits the current input method and the setting of
                         (start (treesit-node-start node)))
                    (> pos start))))
          (theme (js-log-get-theme))
-         (meta)
-         (formatted))
-    (setq meta (mapconcat (apply-partially #'format "%s")
+         (meta (mapconcat (apply-partially #'format "%s")
                           (delq nil
-                                (list (ignore-errors (or (js-log-which-func)
-                                                        (treesit-add-log-current-defun)))
-                                      (buffer-name (current-buffer))
-                                      (line-number-at-pos (point))))
+                                (list
+                                 (ignore-errors
+                                   (or (js-log-which-func)
+                                       (treesit-add-log-current-defun)))
+                                 (buffer-name (current-buffer))
+                                 (line-number-at-pos (point))))
                           " "))
+         (last-item (js-log-last-item (js-log-get-node-list-ascending))))
     (pcase (treesit-node-type
-            (js-log-last-item (js-log-get-node-list-ascending)))
+            last-item)
       ((and (pred (string= "arguments"))
             (guard (ignore-errors
                      (string= "console" (save-excursion
@@ -1152,7 +1157,8 @@ inherits the current input method and the setting of
                                                     pred)))
              (indent-level)
              (indent-str)
-             (result))
+             (result)
+             (formatted))
          (indent-according-to-mode)
          (setq indent-level (+ 2 (current-column)))
          (setq indent-str (make-string indent-level ?\ ))
