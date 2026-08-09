@@ -28,3 +28,43 @@ Add the downloaded directory to the load path:
   :bind ((:map js-log-minibuffer-map
                ("C-j" . js-log-minibuffer-preview))))
 #+end_src
+
+** Logical statement navigation
+
+Tree-sitter's raw node spans do not always match useful editing units.  In
+particular, a semicolon placed at the beginning of a line as an ASI guard can
+be parsed either as an ~empty_statement~ or as the final child of the preceding
+statement.  Js Log normalizes both forms so the semicolon belongs to the
+statement that it guards.  A same-line trailing semicolon remains part of the
+preceding statement.
+
+The following commands operate on these logical statement ranges and do not
+have default key bindings:
+
+- ~js-log-beginning-of-statement~
+- ~js-log-end-of-statement~
+- ~js-log-next-statement~
+- ~js-log-previous-statement~
+- ~js-log-mark-statement~
+
+For example, both snippets below contain three logical statements:
+
+#+begin_src js
+const myVal = 3;
+
+;(function () {})()
+
+const myVal2 = 5;
+#+end_src
+
+#+begin_src js
+const myVal = 3
+
+;(function () {})()
+
+const myVal2 = 5;
+#+end_src
+
+The same resolver is used at syntax boundaries when collecting visible
+identifiers.  Declarations from a function or block that has already ended are
+filtered out of completion candidates.

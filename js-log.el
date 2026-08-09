@@ -33,6 +33,7 @@
 (defvar shr-color-html-colors-alist)
 
 (require 'treesit)
+(require 'cl-lib)
 
 (defvar js-log-node-types '(">>" "<<" "~" "&=" "|=" ">>>=" "do"
                             "do_statement" "-=" "continue"
@@ -454,14 +455,152 @@ Argument NODE is a Treesit node to be processed by the function."
   "Return a list of parent nodes starting from the node at POS.
 
 Argument POS is the position in the buffer to find the node."
-  (let ((node (treesit-node-at pos))
+  (let ((node (js-log--forward-node-at pos))
         (parents))
     (while (setq node (treesit-node-parent node))
-      (push node parents))))
+      (push node parents))
+    parents))
+
+(defconst js-log--statement-container-types
+  '("program" "statement_block" "class_body" "switch_body"
+    "enum_body" "interface_body")
+  "Node types whose named children form a navigable statement level.")
+
+(defun js-log--forward-node-at (pos &optional named)
+  "Return the leaf at POS, preferring the following leaf at a boundary.
+
+This differs from `treesit-node-at' only when POS is immediately after a
+leaf.  `treesit-node-at' returns that preceding leaf; for editing and scope
+resolution the leaf following POS is normally the useful one.  If there is
+no following leaf, return the preceding one.  When NAMED is non-nil, only
+consider named nodes."
+  (when-let* ((node (treesit-node-at pos nil named)))
+    (if (and (< (treesit-node-start node) pos)
+             (= (treesit-node-end node) pos)
+             (< pos (point-max)))
+        (treesit-node-at (1+ pos) nil named)
+      node)))
+
+(defun js-log--horizontal-space-p (start end)
+  "Return non-nil when text from START to END is only horizontal space."
+  (and (<= start end)
+       (save-excursion
+         (goto-char start)
+         (skip-chars-forward " \t" end)
+         (= (point) end))))
+
+(defun js-log--newline-between-p (start end)
+  "Return non-nil when there is a newline between START and END."
+  (and (< start end)
+       (save-excursion
+         (goto-char start)
+         (search-forward "\n" end t))))
+
+(defun js-log--last-semicolon (node)
+  "Return NODE's final semicolon child, or nil."
+  (when-let* ((child (treesit-node-child node -1)))
+    (and (js-log-check-node-type ";" child)
+         child)))
+
+(defun js-log--semicolon-prefix-p (semicolon next)
+  "Return non-nil when SEMICOLON directly prefixes NEXT on the same line."
+  (and semicolon next
+       (js-log--horizontal-space-p (treesit-node-end semicolon)
+                                   (treesit-node-start next))))
+
+(defun js-log--empty-semicolon-prefix-p (node next)
+  "Return non-nil when empty statement NODE is a prefix for NEXT."
+  (and (js-log-check-node-type "empty_statement" node)
+       (js-log--semicolon-prefix-p (js-log--last-semicolon node) next)))
+
+(defun js-log--detached-semicolon (node next)
+  "Return NODE's semicolon when it logically belongs to NEXT.
+
+Tree-sitter attaches a leading ASI guard semicolon to the preceding statement
+when that statement has no earlier terminator.  Treat it as detached when it
+starts on a later line than NODE's last named child and directly prefixes
+NEXT on its own line."
+  (when-let* ((semicolon (js-log--last-semicolon node))
+              (last-named (treesit-node-child node -1 t)))
+    (and (js-log--newline-between-p (treesit-node-end last-named)
+                                    (treesit-node-start semicolon))
+         (js-log--semicolon-prefix-p semicolon next)
+         semicolon)))
+
+(defun js-log--logical-statements (container)
+  "Return logical statement records for CONTAINER.
+
+Each record is a vector [NODE START END].  START and END normally match the
+tree-sitter node, with one deliberate exception: a semicolon used as a
+leading ASI guard belongs to the following statement.  An `empty_statement'
+that directly prefixes another statement is folded into that following
+statement as well."
+  (let ((children (treesit-node-children container t))
+        (previous)
+        (result))
+    (while children
+      (let* ((node (pop children))
+             (next (car children))
+             (previous-prefix
+              (and previous
+                   (or (and (js-log--empty-semicolon-prefix-p previous node)
+                            (js-log--last-semicolon previous))
+                       (js-log--detached-semicolon previous node))))
+             (detached (js-log--detached-semicolon node next)))
+        (unless (js-log--empty-semicolon-prefix-p node next)
+          (push (vector node
+                        (if previous-prefix
+                            (treesit-node-start previous-prefix)
+                          (treesit-node-start node))
+                        (if detached
+                            (treesit-node-end
+                             (treesit-node-child node -1 t))
+                          (treesit-node-end node)))
+                result))
+        (setq previous node)))
+    (nreverse result)))
+
+(defun js-log--statement-container (node)
+  "Return the nearest statement container at or above NODE."
+  (while (and node
+              (not (member (treesit-node-type node)
+                           js-log--statement-container-types)))
+    (setq node (treesit-node-parent node)))
+  node)
+
+(defun js-log--logical-statement-record-at (&optional pos)
+  "Return the logical statement record at POS.
+
+Resolution is forward-biased in whitespace.  At end of buffer, return the
+last statement."
+  (setq pos (or pos (point)))
+  (when-let* ((leaf (js-log--forward-node-at pos))
+              (container (js-log--statement-container leaf))
+              (records (js-log--logical-statements container)))
+    (or (seq-find (lambda (record)
+                    (and (<= (aref record 1) pos)
+                         (< pos (aref record 2))))
+                  records)
+        (seq-find (lambda (record)
+                    (>= (aref record 1) pos))
+                  records)
+        (car (last records)))))
+
+(defun js-log--node-at-point (&optional pos named)
+  "Return the syntax node relevant at POS.
+
+Prefer the logical statement node so leading ASI guard semicolons resolve to
+the expression they guard.  Fall back to a forward-biased leaf.  POS defaults
+to point.  NAMED has the same meaning as in `treesit-node-at' for the fallback
+case."
+  (setq pos (or pos (point)))
+  (if-let* ((record (js-log--logical-statement-record-at pos)))
+      (aref record 0)
+    (js-log--forward-node-at pos named)))
 
 (defun js-log--node-list-ascending ()
   "Return ascending list of nodes from current point."
-  (cl-loop for node = (treesit-node-at (point))
+  (cl-loop for node = (js-log--forward-node-at (point))
            then (treesit-node-parent node) while node
            if (eq (treesit-node-start node)
                   (point))
@@ -517,6 +656,7 @@ Argument POS is the position in the buffer to find the node."
                                        (format "(%s) @entity" ct))
                                      (list "script_element"))
                             "\n"))))
+
 
 
 (defun js-log--get-imports ()
@@ -589,6 +729,81 @@ Argument NODE is the tree-sitter node to be marked."
     (push-mark end)
     (message annotation)))
 
+(defun js-log--logical-statement-index (record records)
+  "Return the index of RECORD's node in RECORDS."
+  (seq-position records record
+                (lambda (left right)
+                  (treesit-node-eq (aref left 0) (aref right 0)))))
+
+(defun js-log--move-statement (direction)
+  "Move by one logical statement in DIRECTION.
+
+DIRECTION is 1 for forward and -1 for backward.  From whitespace before a
+statement, forward movement stops at that statement.  From inside a statement,
+backward movement stops at its beginning."
+  (when-let* ((record (js-log--logical-statement-record-at))
+              (container (js-log--statement-container (aref record 0)))
+              (records (js-log--logical-statements container))
+              (index (js-log--logical-statement-index record records)))
+    (let* ((target-index
+            (if (> direction 0)
+                (if (< (point) (aref record 1)) index (1+ index))
+              (if (> (point) (aref record 1)) index (1- index))))
+           (target (and (>= target-index 0)
+                        (nth target-index records))))
+      (unless target
+        (user-error "No %s statement at this level"
+                    (if (> direction 0) "next" "previous")))
+      (goto-char (aref target 1)))))
+
+;;;###autoload
+(defun js-log-next-statement (&optional count)
+  "Move to the next logical statement at the current level.
+
+With optional COUNT, move that many statements.  A negative COUNT moves
+backward.  Leading ASI guard semicolons are treated as part of the statement
+they guard."
+  (interactive "p")
+  (setq count (or count 1))
+  (let ((direction (if (< count 0) -1 1)))
+    (dotimes (_ (abs count))
+      (js-log--move-statement direction))))
+
+;;;###autoload
+(defun js-log-previous-statement (&optional count)
+  "Move to the previous logical statement at the current level.
+
+With optional COUNT, move that many statements.  A negative COUNT moves
+forward."
+  (interactive "p")
+  (js-log-next-statement (- (or count 1))))
+
+;;;###autoload
+(defun js-log-beginning-of-statement ()
+  "Move to the beginning of the logical statement at point."
+  (interactive)
+  (if-let* ((record (js-log--logical-statement-record-at)))
+      (goto-char (aref record 1))
+    (user-error "No statement at point")))
+
+;;;###autoload
+(defun js-log-end-of-statement ()
+  "Move to the end of the logical statement at point."
+  (interactive)
+  (if-let* ((record (js-log--logical-statement-record-at)))
+      (goto-char (aref record 2))
+    (user-error "No statement at point")))
+
+;;;###autoload
+(defun js-log-mark-statement ()
+  "Mark the logical statement at point."
+  (interactive)
+  (if-let* ((record (js-log--logical-statement-record-at)))
+      (progn
+        (goto-char (aref record 1))
+        (push-mark (aref record 2) nil t))
+    (user-error "No statement at point")))
+
 ;;;###autoload
 (defun js-log-mark-top-parent ()
   "Mark the top-level parent node of the current point in a JavaScript file."
@@ -621,7 +836,7 @@ Argument NODE is the tree-sitter node to be marked."
 
 (defvar-keymap js-log-expand-repeat-map
   :doc
-  "Keymap to repeat `next-buffer' and `previous-buffer'.  Used in `repeat-mode'."
+  "Keymap to repeat `js-log-expand-parents-up' and `js-log-expand-parents-down'."
   :repeat t
   "u" #'js-log-expand-parents-up
   "m" #'js-log-expand-parents-up
@@ -846,14 +1061,64 @@ Argument NODE is a Treesitter node from which to extract identifiers."
             (push args result)))))
     (flatten-list result)))
 
+(defconst js-log--function-node-types
+  '("function_declaration" "function_expression" "generator_function"
+    "generator_function_declaration" "arrow_function" "method_definition")
+  "Node types that delimit the visibility of their parameters.")
+
+(defun js-log--ancestor-of-type (node types)
+  "Return NODE's nearest ancestor whose type is in TYPES."
+  (while (and node
+              (not (member (treesit-node-type node) types)))
+    (setq node (treesit-node-parent node)))
+  node)
+
+(defun js-log--node-has-ancestor-type-p (node types)
+  "Return non-nil when NODE has an ancestor whose type is in TYPES."
+  (and (js-log--ancestor-of-type (treesit-node-parent node) types) t))
+
+(defun js-log--declaration-scope (node)
+  "Return the syntax node that delimits declaration NODE's visibility."
+  (cond
+   ;; Parameters are children of the function syntax but their closest
+   ;; statement container is often the outer program or block.
+   ((js-log--node-has-ancestor-type-p
+     node '("formal_parameters" "required_parameter" "optional_parameter"))
+    (js-log--ancestor-of-type node js-log--function-node-types))
+   ;; A named function expression's name is local to that function.
+   ((let ((parent (treesit-node-parent node)))
+      (and parent
+           (member (treesit-node-type parent)
+                   '("function_expression" "generator_function"))
+           (equal (treesit-node-field-name node) "name")))
+    (treesit-node-parent node))
+   ;; Catch parameters are local to the catch clause.
+   ((js-log--node-has-ancestor-type-p node '("catch_clause"))
+    (js-log--ancestor-of-type node '("catch_clause")))
+   (t
+    (js-log--statement-container node))))
+
+(defun js-log--node-visible-at-p (node pos)
+  "Return non-nil when declaration NODE's scope contains POS."
+  (when-let* ((scope (js-log--declaration-scope node)))
+    (and (<= (treesit-node-start scope) pos)
+         (or (< pos (treesit-node-end scope))
+             ;; The root's end is also the useful insertion point at EOB.
+             (and (= pos (treesit-node-end scope))
+                  (js-log-check-node-type "program" scope))))))
+
 (defun js-log-get-visible-nodes ()
   "Collect unique visible JavaScript AST nodes."
-  (delete-dups
-   (seq-uniq
-    (append
-     (js-log-get-ids-from-parents)
-     (js-log-visible-ids))
-    #'treesit-node-eq)))
+  (let ((pos (point)))
+    (seq-filter
+     (lambda (node)
+       (js-log--node-visible-at-p node pos))
+     (delete-dups
+      (seq-uniq
+       (append
+        (js-log-get-ids-from-parents)
+        (js-log-visible-ids))
+       #'treesit-node-eq)))))
 
 (defun js-log-treesit-sparse (&optional language)
   "Display sparse tree representation with node details.
